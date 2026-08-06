@@ -3,8 +3,12 @@
 import argparse
 import json
 import os
+import sys
 import time
 from copy import deepcopy
+
+# 将项目根目录加入模块搜索路径，确保绘图包 plot 可被导入
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import torch
@@ -15,7 +19,7 @@ from torch.utils.data import random_split
 from DL_config import Config
 from dataset import StructuralDataset
 from model import build_model
-from plotting import (
+from plot import (
     extract_reference_summaries,
     plot_evaluation,
     plot_history,

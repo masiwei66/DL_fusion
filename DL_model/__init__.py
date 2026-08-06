@@ -7,7 +7,7 @@ from .model import (
     ReliabilityGatedFusionHead, StaticAnchoredFusionHead,
     StaticOnlyModel, DynamicOnlyModel, DualBranchFusion, build_model,
 )
-from .plotting import (
+from plot import (
     plot_history,
     plot_evaluation,
     plot_method_comparison,

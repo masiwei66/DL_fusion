@@ -5,6 +5,9 @@ import json
 import os
 import sys
 
+# 将项目根目录加入模块搜索路径，确保绘图包 plot 可被导入
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 import torch
 
@@ -24,7 +27,7 @@ from dataset import (
     _temperature_condition,
 )
 from model import build_model
-from plotting import save_prediction_figures
+from plot import save_prediction_figures
 from safety_rules import RISK_LEVELS, SUPPORT_SETTLEMENT_MAX_MM
 
 # —— 默认输入路径：设为 None 则必须通过命令行传参；设为路径字符串则可直接运行 ——
