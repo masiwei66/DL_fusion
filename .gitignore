@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Claude Code local settings
+.claude/
+
+# Project artifacts
+checkpoints/
+logs/
+*.pth
+*.ckpt
+*.onnx
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
