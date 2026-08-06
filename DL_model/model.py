@@ -1,9 +1,9 @@
-"""Model definitions for structure damage recognition.
+"""桥梁结构损伤识别的模型定义。
 
-The fusion model uses a confidence-aware, per-material gate with dynamic anchor.
-Dynamic-only is the stronger baseline (especially for materials 8/9/19/20/41),
-so fusion anchors on dynamic logits and lets static response enter as a gated
-correction — primarily benefiting material 24 where static outperforms dynamic.
+融合模型采用置信度感知、按材料类别设置的门控，并以动态预测为锚点。
+仅动态（dynamic-only）模式是更强的基线（尤其针对材料 8/9/19/20/41），
+因此融合以动态 logits 为锚点，让静态响应以门控修正的形式进入，
+主要使静态优于动态的材料 24 受益。
 """
 
 from collections import OrderedDict
@@ -13,7 +13,7 @@ import torch.nn as nn
 
 
 def _apply_temperature_condition(features, batch, scale):
-    """Inject normalized temperature without adding checkpoint parameters."""
+    """在不增加检查点参数的前提下注入归一化后的温度信息。"""
     condition = batch.get("condition")
     if condition is None or float(scale) == 0.0:
         return features
@@ -31,7 +31,7 @@ def _apply_temperature_condition(features, batch, scale):
 
 
 class SafeBN(nn.BatchNorm1d):
-    """BatchNorm1d wrapper that skips normalization for batch_size=1."""
+    """BatchNorm1d 的包装器：当 batch_size=1 时跳过归一化。"""
 
     def forward(self, x):
         if x.size(0) <= 1:
@@ -40,13 +40,12 @@ class SafeBN(nn.BatchNorm1d):
 
 
 class PositionEncoding(nn.Module):
-    """Learned Fourier encoding for 3D sensor coordinates.
+    """用于 3D 传感器坐标的可学习傅里叶编码。
 
-    Coordinates in the bridge model are in mm and can be numerically large.  The
-    encoder first converts each sensor layout into centered, scale-normalized
-    relative coordinates, then adds Fourier features before a small MLP.  This
-    keeps geometry information expressive without injecting raw coordinate scale
-    into the response channels.
+    桥梁模型中的坐标单位为毫米，数值可能较大。编码器首先将每个传感器
+    布局转换为居中且经过尺度归一化的相对坐标，然后在小规模 MLP 之前
+    加入傅里叶特征。这样既保留了几何信息的表达能力，又不会将原始坐标
+    尺度注入到响应通道中。
     """
 
     def __init__(self, input_dim=3, pos_dim=16, num_freqs=4):
@@ -84,7 +83,7 @@ class PositionEncoding(nn.Module):
 
 
 class PositionFiLM(nn.Module):
-    """Feature-wise linear modulation from position embeddings."""
+    """基于位置嵌入的特征级线性调制（FiLM）。"""
 
     def __init__(self, pos_dim, feat_dim, scale=0.1):
         super().__init__()
@@ -99,7 +98,7 @@ class PositionFiLM(nn.Module):
 
 
 class AttentionPool(nn.Module):
-    """Small attention pooling over sensor/node tokens."""
+    """对传感器/节点 token 进行的小规模注意力池化。"""
 
     def __init__(self, dim, hidden_dim=None):
         super().__init__()
@@ -117,11 +116,11 @@ class AttentionPool(nn.Module):
 
 
 class StaticBranch(nn.Module):
-    """Multi-temperature displacement branch with position FiLM.
+    """多温度位移分支，带位置 FiLM。
 
-    V2 intentionally removes the legacy strain input.  ``strain`` remains an
-    optional argument so older callers can still invoke the branch while the
-    network contract is defined solely by temperature-aligned displacement.
+    V2 版本有意移除了旧的应变（strain）输入。``strain`` 仍保留为可选
+    参数，以便旧调用方仍可调用该分支，而网络契约仅由与温度对齐的位移
+    定义。
     """
 
     def __init__(self, pos_dim=16, hidden_dim=128, out_dim=64,
@@ -165,7 +164,7 @@ class StaticBranch(nn.Module):
 
 
 class DynamicBranch(nn.Module):
-    """Acceleration time-series branch with sensor-wise position FiLM."""
+    """加速度时间序列分支，带逐传感器的位置 FiLM。"""
 
     def __init__(self, pos_dim=16, hidden_dim=128, out_dim=64,
                  n_nodes=5, n_channels=3):
@@ -213,7 +212,7 @@ class DynamicBranch(nn.Module):
 
 
 class PredictionHead(nn.Module):
-    """Classification head plus auxiliary scaling-factor regression head."""
+    """分类头，外加一个辅助的比例因子回归头。"""
 
     def __init__(self, input_dim, n_materials):
         super().__init__()
@@ -225,7 +224,7 @@ class PredictionHead(nn.Module):
 
 
 class MultiTaskPredictionHead(nn.Module):
-    """Material, support settlement, region risk, and global state heads."""
+    """面向材料、支座沉降、区域风险与整体状态的多个任务头。"""
 
     def __init__(self, input_dim, config):
         super().__init__()
@@ -256,15 +255,14 @@ class MultiTaskPredictionHead(nn.Module):
 
 
 class ClasswiseLateFusionHead(nn.Module):
-    """Lightweight class-wise late fusion for static and dynamic predictions.
+    """面向静态与动态预测的轻量级逐类别后融合。
 
-    One learnable static weight is used for each material class:
+    每个材料类别使用一个可学习的静态权重：
 
         fused = alpha * static + (1 - alpha) * dynamic
 
-    The learned alpha values are easy to report and interpret: alpha close to
-    1 means the class relies more on static response, while alpha close to 0
-    means it relies more on dynamic response.
+    学习得到的 alpha 值易于汇报与解读：alpha 接近 1 表示该类更依赖
+    静态响应，alpha 接近 0 表示该类更依赖动态响应。
     """
 
     def __init__(self, branch_dim, n_materials, alpha_init=None):
@@ -317,15 +315,13 @@ class ClasswiseLateFusionHead(nn.Module):
 
 
 class ReliabilityGatedFusionHead(nn.Module):
-    """Reliability-gated multimodal fusion with per-class gate control.
+    """带逐类别门控的可靠性门控多模态融合。
 
-    The head predicts both branch outputs, then uses interaction features and
-    branch confidence to learn a per-material correction gate.  Dynamic anchor
-    is used throughout — dynamic_only is the stronger baseline for most
-    materials.  Per-class gate bias and per-class gate regularisation allow
-    suppressing the gate for classes where dynamic is already near-perfect
-    (e.g. materials 20, 41) while allowing it to open for classes where
-    static provides complementary information (e.g. material 24).
+    该头先预测两个分支的输出，再利用交互特征与分支置信度学习一个
+    逐材料的修正门控。全程使用动态锚点——对于大多数材料，
+    dynamic_only 是更强的基线。通过逐类别门控偏置与逐类别门控正则化，
+    可以在动态已近乎完美的类别（如材料 20、41）上抑制门控，同时允许
+    门控在静态提供互补信息的类别（如材料 24）上打开。
     """
 
     def __init__(self, branch_dim, fusion_dim, n_materials, dropout=0.2,
@@ -444,12 +440,12 @@ class ReliabilityGatedFusionHead(nn.Module):
         return logits, reg_out, fused_emb, aux
 
 
-# Backward-compatible alias for older imports/checkpoints metadata.
+# 为旧版 import 与检查点元数据保留的向后兼容别名。
 StaticAnchoredFusionHead = ReliabilityGatedFusionHead
 
 
 class StaticOnlyModel(nn.Module):
-    """Static-only baseline."""
+    """仅静态（static-only）基线模型。"""
 
     def __init__(self, config):
         super().__init__()
@@ -478,7 +474,7 @@ class StaticOnlyModel(nn.Module):
 
 
 class DynamicOnlyModel(nn.Module):
-    """Dynamic-only baseline."""
+    """仅动态（dynamic-only）基线模型。"""
 
     def __init__(self, config):
         super().__init__()
@@ -507,14 +503,14 @@ class DynamicOnlyModel(nn.Module):
 
 
 class DualBranchFusion(nn.Module):
-    """Dual-branch model with lightweight class-wise late fusion.
+    """带轻量级逐类别后融合的双分支模型。
 
-    Supports three training stages controlled via ``stage``:
+    支持通过 ``stage`` 控制的三种训练阶段：
 
-    - ``'pretrain'``: legacy joint branch training with contrastive loss;
-      forward returns (static_logits, static_reg, dynamic_logits, dynamic_reg,
-      static_feat, dynamic_feat).
-    - ``'fusion_head'`` / ``'finetune'``: end-to-end late fusion.
+    - ``'pretrain'``：使用对比损失的传统联合分支训练；
+      forward 返回 (static_logits, static_reg, dynamic_logits, dynamic_reg,
+      static_feat, dynamic_feat)。
+    - ``'fusion_head'`` / ``'finetune'``：端到端后融合。
     """
 
     def __init__(self, config):
@@ -577,7 +573,7 @@ class DualBranchFusion(nn.Module):
         if self._stage == 'pretrain':
             static_logits, static_reg = self.fusion.static_head(static_feat)
             dynamic_logits, dynamic_reg = self.fusion.dynamic_head(dynamic_feat)
-            # still run the full fusion head so last_aux is populated
+            # 仍运行完整的融合头，以便填充 last_aux
             _logits, _reg_out, _fused, aux = self.fusion(static_feat, dynamic_feat)
             self.last_aux = aux
             return static_logits, static_reg, dynamic_logits, dynamic_reg, static_feat, dynamic_feat
@@ -598,7 +594,7 @@ class DualBranchFusion(nn.Module):
 
 
 def build_model(config):
-    """Build a model from config.model_type."""
+    """根据 config.model_type 构建模型。"""
 
     model_type = getattr(config, 'model_type', 'fusion')
     if model_type == 'fusion':

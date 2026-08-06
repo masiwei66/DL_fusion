@@ -1,4 +1,4 @@
-"""Training, evaluation, inference, and plotting entry point."""
+"""训练、评估、推理与绘图的入口程序。"""
 
 import argparse
 import json
@@ -35,7 +35,7 @@ MODEL_TYPES = ("static_only", "dynamic_only", "fusion")
 
 
 def config_to_dict(cfg):
-    """Return checkpoint-friendly config values."""
+    """返回便于保存到检查点中的配置值。"""
     keys = [
         "data_root", "corrected_data_dir", "reference_data_dir",
         "data_dir", "save_root", "log_root", "save_dir", "log_dir",
@@ -84,7 +84,7 @@ def config_to_dict(cfg):
 
 
 def split_indices(dataset_or_n, cfg):
-    """Split train/val/test indices, optionally isolating sample groups."""
+    """划分训练/验证/测试索引，可选地隔离样本分组。"""
     if isinstance(dataset_or_n, int):
         n_samples = dataset_or_n
         group_labels = None
@@ -111,7 +111,7 @@ def split_indices(dataset_or_n, cfg):
 
 
 def split_indices_by_group(group_labels, cfg, sample_targets=None):
-    """Group-aware split with approximate per-label positive balance."""
+    """基于分组的划分，在各标签正例数量上近似均衡。"""
     groups = {}
     for idx, group in enumerate(group_labels):
         groups.setdefault(group, []).append(idx)
@@ -176,7 +176,7 @@ def split_indices_by_group(group_labels, cfg, sample_targets=None):
 
 
 def make_criterion(dataset, train_idx, cfg, device):
-    """Build BCE and regression losses from train-set class balance."""
+    """根据训练集类别平衡构建 BCE 与回归损失。"""
     targets = dataset.targets[train_idx]
     pos = targets.sum(dim=0)
     neg = targets.size(0) - pos
@@ -190,7 +190,7 @@ def checkpoint_path(cfg):
 
 
 def load_checkpoint(model, optimizer, dataset, path, device):
-    """Restore model, optimizer, and normalizer state from a checkpoint."""
+    """从检查点恢复模型、优化器与归一化器的状态。"""
     ckpt = torch.load(path, map_location=device)
     if "model_ema" in ckpt:
         model.load_state_dict(ckpt["model"])
@@ -208,7 +208,7 @@ def load_checkpoint(model, optimizer, dataset, path, device):
 
 def evaluate_model_on_dataset(model, dataset, indices, criterion_cls, criterion_reg,
                               cfg, desc, plot_path=None):
-    """Evaluate a loaded model on a dataset without refitting normalizers."""
+    """在数据集上评估已加载的模型，无需重新拟合归一化器。"""
     device = torch.device(cfg.device)
     static_pos = dataset.static_pos.to(device)
     dynamic_pos = dataset.dynamic_pos.to(device)
@@ -222,7 +222,7 @@ def evaluate_model_on_dataset(model, dataset, indices, criterion_cls, criterion_
 
 
 def build_external_dataset(cfg, ckpt, data_dir):
-    """Load an external test dataset using checkpoint normalizer statistics."""
+    """使用检查点中的归一化器统计量加载外部测试数据集。"""
     if not data_dir or not os.path.isdir(data_dir):
         return None
     dataset = StructuralDataset(data_dir, normalize=True, fit_normalizer=False)
@@ -232,14 +232,14 @@ def build_external_dataset(cfg, ckpt, data_dir):
 
 
 def apply_checkpoint_config(cfg, ckpt_config):
-    """Restore checkpoint-time input/output contract into Config."""
+    """将检查点保存时的输入/输出契约恢复进 Config。"""
     for key, value in (ckpt_config or {}).items():
         if hasattr(cfg, key):
             setattr(cfg, key, value)
 
 
 def selection_score(metrics, cfg):
-    """Score used for checkpointing and early stopping."""
+    """用于检查点保存与早停的评分。"""
     metric = getattr(cfg, "selection_metric", "f1")
     f1 = metrics.get("f1", 0.0)
     auc = metrics.get("auc", 0.0)
@@ -251,7 +251,7 @@ def selection_score(metrics, cfg):
 
 
 def warm_start_fusion_branches(model, cfg, device):
-    """Initialize fusion branches and heads from single-branch checkpoints."""
+    """从单分支检查点初始化融合分支与融合头。"""
     if cfg.model_type != "fusion" or not getattr(cfg, "fusion_warm_start", False):
         return False
 
@@ -348,7 +348,7 @@ def warm_start_fusion_branches(model, cfg, device):
 
 
 def set_fusion_alpha_only_trainable(model):
-    """Freeze the fusion model except the class-wise alpha logits."""
+    """冻结融合模型，仅保留类别级 alpha logits 可训练。"""
     for param in model.parameters():
         param.requires_grad = False
     if hasattr(model, "fusion") and hasattr(model.fusion, "alpha_logit"):
@@ -357,7 +357,7 @@ def set_fusion_alpha_only_trainable(model):
 
 
 def set_fusion_dynamic_trainable(model, trainable):
-    """Freeze or unfreeze the dynamic branch and its auxiliary head."""
+    """冻结或解冻动态分支及其辅助头。"""
     if not hasattr(model, "dynamic_branch") or not hasattr(model, "fusion"):
         return
     for param in model.dynamic_branch.parameters():
@@ -368,7 +368,7 @@ def set_fusion_dynamic_trainable(model, trainable):
 
 def _save_checkpoint(cfg, ckpt_data, dataset, pos_weight, train_idx, val_idx, test_idx,
                      model, optimizer, history, best_val_f1, best_score, ema):
-    """Persist a checkpoint to disk."""
+    """将检查点持久化到磁盘。"""
     ckpt_data.update({
         "model": deepcopy(model.state_dict()),
         "optimizer": optimizer.state_dict(),
@@ -395,7 +395,7 @@ def _run_training_stage(model, stage_name, total_epochs, lr, train_loader, val_l
                         best_val_f1, best_score, patience, pos_weight,
                         dataset, train_idx, val_idx, test_idx,
                         ema=None, effective_min_epochs=0):
-    """Run one training stage and return updated tracking state."""
+    """运行一个训练阶段并返回更新后的跟踪状态。"""
     print("\n" + "=" * 72)
     print(f"Stage: {stage_name}  ({total_epochs} epochs, lr={lr:.1e})")
     print("=" * 72)
@@ -482,7 +482,7 @@ def _run_training_stage(model, stage_name, total_epochs, lr, train_loader, val_l
 
 def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx, args,
                     reference_dataset=None):
-    """Train or test one model type."""
+    """训练或测试一种模型类型。"""
     cfg = deepcopy(base_cfg)
     cfg.set_model_type(model_type)
 
@@ -556,10 +556,10 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
             best_score = ckpt.get("best_score", best_val_f1)
             history = ckpt.get("history", [])
             print(f"Resumed from {args.resume}")
-            # jump directly to stage 3 (finetune) for final evaluation
+            # 直接跳到阶段 3（微调）进行最终评估
             model.set_stage("finetune")
         else:
-            # ── Stage 1: Joint branch pretraining ──
+            # ── 阶段 1：联合分支预训练 ──
             model.set_stage("pretrain")
             best_val_f1, best_score, history = _run_training_stage(
                 model, "S1-pretrain",
@@ -580,7 +580,7 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
                 effective_min_epochs=cfg.fusion_stage1_epochs // 3,
             )
 
-            # ── Stage 2: Fusion head training (branches frozen) ──
+            # ── 阶段 2：融合头训练（分支冻结）──
             model.set_stage("fusion_head")
             for p in model.static_branch.parameters():
                 p.requires_grad = False
@@ -605,7 +605,7 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
                 effective_min_epochs=cfg.fusion_stage2_epochs // 3,
             )
 
-            # ── Stage 3: End-to-end fine-tuning ──
+            # ── 阶段 3：端到端微调 ──
             model.set_stage("finetune")
             for p in model.static_branch.parameters():
                 p.requires_grad = True
@@ -632,7 +632,7 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
             )
 
     else:
-        # static_only / dynamic_only: single-stage training
+        # static_only / dynamic_only：单阶段训练
         if hasattr(model, "set_stage"):
             model.set_stage("finetune")
         fusion_warm_started = False
@@ -675,7 +675,7 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
     print(f"\n[{model_type}] Best validation F1: {best_val_f1:.4f}")
     plot_history(history, os.path.join(cfg.log_dir, f"{cfg.run_name}_history.png"))
 
-    # ── Final test evaluation ──
+    # ── 最终测试评估 ──
     best_ckpt = torch.load(checkpoint_path(cfg), map_location=device)
     if "eval_thresholds" in best_ckpt:
         cfg.eval_thresholds = np.asarray(best_ckpt["eval_thresholds"], dtype=np.float32)
@@ -743,10 +743,10 @@ def main():
         "--model",
         default="all",
         choices=["fusion", "static_only", "dynamic_only", "all"],
-        help="Model type to train/test. all runs static_only, dynamic_only, fusion.",
+        help="要训练/测试的模型类型。all 依次运行 static_only、dynamic_only、fusion。",
     )
-    parser.add_argument("--input", default=None, help="JSON file for inference")
-    parser.add_argument("--resume", default=None, help="Checkpoint path for resume/test/infer")
+    parser.add_argument("--input", default=None, help="用于推理的 JSON 文件")
+    parser.add_argument("--resume", default=None, help="用于恢复/测试/推理的检查点路径")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
@@ -754,17 +754,17 @@ def main():
     parser.add_argument(
         "--corrected-data-dir",
         default=None,
-        help="Corrected-model dataset used for train/val/same-domain test.",
+        help="用于训练/验证/同域测试的修正模型数据集。",
     )
     parser.add_argument(
         "--data-dir",
         dest="corrected_data_dir",
-        help="Alias for --corrected-data-dir; points to a result_*.json directory.",
+        help="--corrected-data-dir 的别名；指向 result_*.json 目录。",
     )
     parser.add_argument(
         "--reference-data-dir",
         default=None,
-        help="Reference-model dataset used only for cross-domain testing.",
+        help="仅用于跨域测试的参考模型数据集。",
     )
     args = parser.parse_args()
 

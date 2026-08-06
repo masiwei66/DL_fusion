@@ -1,4 +1,4 @@
-"""Global configuration for bridge multi-condition safety assessment."""
+"""桥梁多工况安全评估的全局配置。"""
 
 import os
 import sys
@@ -12,7 +12,7 @@ try:
         SUPPORT_SETTLEMENT_MAX_MM,
         SUPPORT_SETTLEMENT_NODES,
     )
-except ImportError:  # Support running scripts directly from this folder.
+except ImportError:  # 支持从本文件夹直接运行脚本。
     from safety_rules import (
         CANDIDATE_MATERIAL_IDS,
         REGION_DEFINITIONS,
@@ -25,9 +25,9 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class Config:
-    """Training, model, data, and engineering-rule hyperparameters."""
+    """训练、模型、数据及工程规则相关的超参数。"""
 
-    # V2 temperature-state dataset is the canonical training input.
+    # V2 温度状态数据集是标准训练输入。
     data_root = "E:/working/DL_data/data_new"
     corrected_data_dir = data_root
     reference_data_dir = os.path.join(data_root, "reference_model_dataset")

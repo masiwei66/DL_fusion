@@ -1,8 +1,8 @@
-"""Plot raw V2 vibration and temperature-displacement responses.
+"""绘制原始 V2 振动响应以及温度—位移响应曲线。
 
-The module can be imported from Python or executed as a command-line tool.
-Only response values, node maps, coordinates, temperature and sample metadata
-are read. Labels and finite-element generation truth are not used as curves.
+本模块既可从 Python 中导入，也可作为命令行工具执行。
+仅读取响应数值、节点映射、坐标、温度与样本元数据。
+标签与有限元生成的真实值不作为曲线使用。
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ STATIC_COMPONENTS = ("UX", "UY", "UZ")
 
 
 def load_v2_sample(path):
-    """Load and minimally validate one V2 result JSON sample."""
+    """加载一个 V2 结果 JSON 样本，并进行最小化校验。"""
     path = Path(path)
     with path.open(encoding="utf-8") as file:
         sample = json.load(file)
@@ -121,7 +121,7 @@ def plot_vibration_timeseries(
     dpi=300,
     time_range=None,
 ):
-    """Plot acceleration time series for a selected dynamic node."""
+    """绘制选定动力节点的加速度时间序列。"""
     sample = (
         load_v2_sample(sample_or_path)
         if isinstance(sample_or_path, (str, Path))
@@ -207,7 +207,7 @@ def plot_temperature_displacement(
     formats=("png",),
     dpi=300,
 ):
-    """Plot temperature-displacement curves for a selected static node."""
+    """绘制选定静力节点的温度—位移曲线。"""
     sample = (
         load_v2_sample(sample_or_path)
         if isinstance(sample_or_path, (str, Path))
@@ -283,7 +283,7 @@ def plot_sample_responses(
     dpi=300,
     time_range=None,
 ):
-    """Generate both requested response figures and return saved paths."""
+    """生成所请求的两类响应图，并返回已保存的文件路径。"""
     sample = load_v2_sample(input_path)
     sample_id, _scenario = _sample_caption(sample)
     output_dir = Path(output_dir)
@@ -320,14 +320,14 @@ def plot_sample_responses(
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Plot V2 vibration time series and temperature-displacement responses."
+            "绘制 V2 振动时间序列与温度—位移响应曲线。"
         )
     )
     parser.add_argument(
-        "--input", required=True, help="Path to one result_*.json file."
+        "--input", required=True, help="指向一个 result_*.json 文件的路径。"
     )
     parser.add_argument("--output-dir", default="plot/outputs")
-    parser.add_argument("--vib-node", type=int, default=None, help="Dynamic node ID.")
+    parser.add_argument("--vib-node", type=int, default=None, help="动力节点 ID。")
     parser.add_argument(
         "--vib-components",
         nargs="+",
@@ -335,7 +335,7 @@ def build_parser():
         default=list(DYNAMIC_COMPONENTS),
     )
     parser.add_argument(
-        "--static-node", type=int, default=None, help="Static node ID."
+        "--static-node", type=int, default=None, help="静力节点 ID。"
     )
     parser.add_argument(
         "--disp-components",

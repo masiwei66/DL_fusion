@@ -1,9 +1,8 @@
-"""Engineering safety rules for multi-condition bridge state assessment.
+"""多工况桥梁状态评估的工程安全规则。
 
-The neural network predicts response-derived condition variables.  These rules
-turn material stiffness loss and support settlement into region and global
-safety labels that can be used both during dataset generation and training.
-All lengths are in millimetres.
+神经网络预测由响应导出的状态变量。这些规则将材料刚度损失与支座沉降
+转化为区域级和全局安全标签，既可用于数据集生成，也可用于训练过程。
+所有长度单位均为毫米。
 """
 
 from __future__ import annotations
@@ -29,11 +28,11 @@ DANGER = 3
 
 @dataclass(frozen=True)
 class SafetyThresholds:
-    """Initial engineering thresholds for generated bridge states.
+    """用于生成桥梁状态的初始工程阈值。
 
-    Material scaling factor uses lower-is-worse convention:
-    1.0 means undamaged, 0.8 means 20 percent stiffness loss.
-    Settlement uses positive downward magnitude in mm.
+    材料缩放因子采用“数值越低越严重”的约定：
+    1.0 表示未损伤，0.8 表示刚度损失 20%。
+    沉降采用正向向下量值，单位为毫米。
     """
 
     material_warning: float = 0.90
@@ -47,8 +46,8 @@ class SafetyThresholds:
 DEFAULT_THRESHOLDS = SafetyThresholds()
 
 
-# Initial region design.  The names are intentionally engineering-facing rather
-# than model-facing; adjust these lists after confirming the bridge partition.
+# 初始区域设计。区域名称刻意面向工程语义而非模型语义；
+# 确认桥梁分区后，请调整这些列表。
 REGION_DEFINITIONS = {
     "left_support1_zone": {
         "material_ids": [],
@@ -130,11 +129,10 @@ def make_support_settlement_case(
     min_mm: float = SUPPORT_SETTLEMENT_MIN_MM,
     max_mm: float = SUPPORT_SETTLEMENT_MAX_MM,
 ) -> Dict:
-    """Sample one settlement condition over 1-4 support nodes.
+    """在 1-4 个支座节点上采样一种沉降工况。
 
-    Returned values are positive settlement magnitudes.  `load_step` uses the
-    negative sign for UZ because downward settlement is normally negative in the
-    bridge model coordinate system.
+    返回的值为正的沉降量。`load_step` 中对 UZ 使用负号，因为
+    在桥梁模型坐标系中，向下沉降通常为负。
     """
 
     rng = rng or np.random.default_rng()
@@ -164,7 +162,7 @@ def build_safety_labels(
     thresholds: SafetyThresholds = DEFAULT_THRESHOLDS,
     region_definitions: Mapping[str, Mapping[str, Iterable[int]]] = REGION_DEFINITIONS,
 ) -> Dict:
-    """Create material, support, region, and global safety labels."""
+    """生成材料、支座、区域及全局安全标签。"""
 
     material_map = _as_mapping(material_ids, material_scaling_factors)
     if support_settlement_mm is None:

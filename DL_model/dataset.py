@@ -1,7 +1,7 @@
-"""Dataset loader for multi-condition bridge safety assessment.
+"""面向多工况桥梁安全评估的数据集加载器。
 
-The loader accepts compact ``result_*.json`` metadata plus HDF5 response arrays.
-It also keeps backward compatibility with the older flat JSON sample format.
+该加载器接受紧凑的 ``result_*.json`` 元数据以及 HDF5 响应数组，
+同时保持与旧版扁平 JSON 样本格式的向后兼容性。
 """
 
 import glob
@@ -23,7 +23,7 @@ try:
         SUPPORT_NODES,
     )
     from .safety_rules import build_safety_labels
-except ImportError:  # Support running scripts directly from this folder.
+except ImportError:  # 支持直接从本文件夹运行脚本。
     from DL_config import (
         CANDIDATE_IDS,
         DYNAMIC_NODES,
@@ -56,7 +56,7 @@ def _response_map(sample, *keys):
 
 
 def _nested_response(sample, response_key):
-    """Return a response from either the legacy flat or V2 nested schema."""
+    """从旧版扁平结构或 V2 嵌套结构中返回响应。"""
     if response_key in sample:
         return sample[response_key]
     paths = {
@@ -214,7 +214,7 @@ def _temperature_condition(sample):
 
 
 class StructuralDataset(Dataset):
-    """Load response tensors and condition/safety labels from result_*.json."""
+    """从 result_*.json 加载响应张量以及工况/安全标签。"""
 
     def __init__(self, data_dir, normalize=True, fit_normalizer=False, normalizer_indices=None):
         self.data_dir = data_dir

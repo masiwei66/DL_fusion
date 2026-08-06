@@ -1,4 +1,4 @@
-"""Batch inference for bridge multi-condition safety assessment."""
+"""面向桥梁多工况安全评估的批量推理。"""
 
 import glob
 import json
@@ -35,10 +35,10 @@ DEFAULT_INPUT = r"E:\working\DL_data\data_new\result_000000.json"
 
 
 class PredictContext:
-    """Lightweight replacement for StructuralDataset during inference.
+    """推理阶段用于替代 StructuralDataset 的轻量级实现。
 
-    Reads node positions and response layout from a single JSON sample
-    (no training-set scan), and takes normalizer stats from the checkpoint.
+    从单个 JSON 样本中读取节点坐标与响应布局（无需扫描训练集），
+    并从检查点中获取归一化统计量。
     """
 
     def __init__(self, sample, normalizer_state):
@@ -175,10 +175,10 @@ def _make_batch(raw_data, ctx, device):
 
 
 def predict_one(model, raw_data, ctx, device, thresholds=None, return_full=False):
-    """Predict one JSON sample.
+    """对单个 JSON 样本进行预测。
 
-    *ctx* may be a PredictContext (fast path) or a StructuralDataset (backward
-    compatible, but incurs a full training-set scan).
+    *ctx* 可以是 PredictContext（快速路径）或 StructuralDataset（向后兼容，
+    但会进行完整的训练集扫描）。
     """
 
     batch = _make_batch(raw_data, ctx, device)
@@ -215,10 +215,10 @@ def predict_one(model, raw_data, ctx, device, thresholds=None, return_full=False
 
 
 def _extract_ground_truth(raw_data):
-    """Safely extract ground-truth labels from a result_*.json sample.
+    """从 result_*.json 样本中安全地提取真实标签。
 
-    Returns a dict with all ground-truth fields, or empty dict if the sample
-    has no safety labels (e.g. raw field data without annotations).
+    返回包含全部真实字段的字典；若样本没有安全标签（例如无标注的原始
+    场数据），则返回空字典。
     """
     safety = raw_data.get("safety_labels")
     material_ids = raw_data.get("material_ids", [])
@@ -227,10 +227,10 @@ def _extract_ground_truth(raw_data):
     if safety is None and not material_ids:
         return {}
 
-    # Build material-level ground truth for the 6 candidate materials.
+    # 构建 6 个候选材料的材料级真实标签。
     cand = CANDIDATE_IDS
 
-    # Build id-to-index mapping if available (needed for scaling factor lookup).
+    # 如可用，则构建 ID 到索引的映射（缩放因子查询所需）。
     idx_map = {}
     if material_ids:
         idx_map = {int(m): i for i, m in enumerate(material_ids)}
@@ -239,7 +239,7 @@ def _extract_ground_truth(raw_data):
         mat_labels = safety["material_labels"]
         mat_risk = safety.get("material_risk_levels", [0] * len(cand))
     elif material_ids and material_sf is not None:
-        # Fallback: compute from scaling factors when safety_labels is missing.
+        # 回退方案：当 safety_labels 缺失时，根据缩放因子计算。
         mat_labels = []
         mat_risk = []
         for mid in cand:
@@ -256,7 +256,7 @@ def _extract_ground_truth(raw_data):
     else:
         return {}
 
-    # Support ground truth.
+    # 支座沉降真实标签。
     support = raw_data.get("support_settlement", {}) if raw_data.get("support_settlement") else {}
     support_values = support.get("values_mm", [])
     if safety is not None:
@@ -266,7 +266,7 @@ def _extract_ground_truth(raw_data):
         sup_labels = [int(abs(float(v)) >= 2.0) for v in support_values]
         sup_risk = [0] * len(sup_labels)
 
-    # Region and global labels.
+    # 区域与整体风险标签。
     region_names_from_data = list((safety or {}).get(
         "region_names",
         raw_data.get("region_definitions", {}).keys(),
@@ -274,7 +274,7 @@ def _extract_ground_truth(raw_data):
     region_risk_gt = (safety or {}).get("region_risk_levels", [0] * len(region_names_from_data or [0] * 7))
     global_level_gt = (safety or {}).get("global_level", None)
 
-    # Material scaling factors for candidate materials.
+    # 候选材料的缩放因子。
     mat_sf_gt = None
     if material_ids and material_sf is not None:
         mat_sf_gt = [float(material_sf[idx_map[m]]) if m in idx_map else 1.0 for m in cand]
@@ -304,7 +304,7 @@ def print_result(filename, result):
     print(f"File: {os.path.basename(filename)}")
     print(f"{'=' * 64}")
 
-    # ── Material condition ──
+    # ── 材料状况 ──
     header = f"{'ID':>8} {'pred':>10} {'prob':>10} {'sf_pred':>10}"
     if has_gt:
         header += f" {'true':>10} {'true_sf':>10}"
@@ -325,7 +325,7 @@ def print_result(filename, result):
             line += f" {true_state:>10} {true_sf}"
         print(line)
 
-    # ── Support settlement ──
+    # ── 支座沉降 ──
     header = f"{'node':>8} {'pred':>10} {'prob':>10} {'pred_mm':>10}"
     if has_gt:
         header += f" {'true':>10} {'true_mm':>10}"
@@ -346,7 +346,7 @@ def print_result(filename, result):
             line += f" {true_state:>10} {true_mm}"
         print(line)
 
-    # ── Region risk ──
+    # ── 区域风险 ──
     region_names = result.get("region_names", REGION_NAMES)
     header = f"{'Region':<24} {'pred':>10}"
     if has_gt:
@@ -363,7 +363,7 @@ def print_result(filename, result):
             line += f" {gt_name:>10}"
         print(line)
 
-    # ── Global level ──
+    # ── 整体风险等级 ──
     if has_gt and gt.get("global_level") is not None:
         print(f"\nGlobal safety:  pred={_risk_name(result.get('global_level', 0))}"
               f"  true={_risk_name(gt['global_level'])}")
@@ -402,7 +402,7 @@ def main():
     model = model.to(device)
     thresholds = ckpt.get("eval_thresholds")
 
-    # Build prediction context from the first input file + checkpoint normalizer.
+    # 依据第一个输入文件与检查点归一化器构建预测上下文。
     first_sample = _load_sample(files[0])
     ctx = PredictContext(first_sample, ckpt.get("normalizer"))
     figure_dir = os.path.join(cfg.log_root, "prediction_figures")

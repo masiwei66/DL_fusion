@@ -1,4 +1,4 @@
-"""Training and evaluation utilities for multi-condition safety assessment."""
+"""用于多工况安全评估的训练与评估工具。"""
 
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ from DL_config import CANDIDATE_IDS, SUPPORT_NODES
 
 
 class EMAModel:
-    """Exponential moving average of trainable weights."""
+    """可训练权重的指数移动平均（EMA）。"""
 
     def __init__(self, model, decay=0.999):
         self.decay = decay
@@ -48,7 +48,7 @@ class EMAModel:
 
 
 def find_best_thresholds(y_true, y_prob, grid=None, recall_constraints=None):
-    """Find per-label thresholds that maximize validation F1."""
+    """寻找使验证集 F1 最大化的逐标签阈值。"""
 
     if grid is None:
         grid = np.linspace(0.02, 0.95, 94)
@@ -115,7 +115,7 @@ def compute_multilabel_metrics(y_true, y_pred, y_prob, label_ids, prefix=""):
 
 
 def compute_metrics(y_true, y_pred, y_prob):
-    """Backward-compatible material metrics."""
+    """向后兼容的材料指标。"""
 
     return compute_multilabel_metrics(y_true, y_pred, y_prob, CANDIDATE_IDS)
 
@@ -355,8 +355,8 @@ def multitask_loss(output, batch, criterion_cls, criterion_reg, config, target_s
     )
     global_loss = F.cross_entropy(global_logits, batch["global_target"])
 
-    # Rule consistency: predicted global level should not be lower than the
-    # maximum predicted region level in expectation.
+    # 规则一致性约束：预期上，预测的整体安全等级不应低于
+    # 各区域最高预测等级。
     levels = torch.arange(config.n_safety_levels, device=global_logits.device).float()
     region_expected = torch.softmax(region_logits, dim=-1).matmul(levels).max(dim=1).values
     global_expected = torch.softmax(global_logits, dim=-1).matmul(levels)

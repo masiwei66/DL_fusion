@@ -1,6 +1,6 @@
-"""Quick single-file inference helper.
+"""单文件快速推理辅助脚本。
 
-Edit `file_path` and run this script after training a model.
+训练完模型后，修改 `file_path` 并运行本脚本即可。
 """
 
 import json
