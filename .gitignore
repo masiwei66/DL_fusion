@@ -20,6 +20,8 @@ env/
 # Project artifacts
 checkpoints/
 logs/
+outputs/
+outputs_cli_check/
 *.pth
 *.ckpt
 *.onnx

@@ -31,7 +31,7 @@ from plot import save_prediction_figures
 from safety_rules import RISK_LEVELS, SUPPORT_SETTLEMENT_MAX_MM
 
 # —— 默认输入路径：设为 None 则必须通过命令行传参；设为路径字符串则可直接运行 ——
-DEFAULT_INPUT = r"E:\working\DL_data\data\reference_model_dataset\result_001224.json"
+DEFAULT_INPUT = r"E:\working\DL_data\data_new\result_000000.json"
 
 
 class PredictContext:

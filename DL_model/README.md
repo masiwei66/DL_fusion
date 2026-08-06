@@ -424,3 +424,18 @@ python _lab_platform/DL_model/quick_predict.py
 - PyTorch ≥ 2.0
 - NumPy / scikit-learn / tqdm
 - matplotlib（可选，用于绘图）
+
+## V2 温度状态数据（当前默认）
+
+当前训练默认读取 `E:/working/DL_data/data_new` 下的 `result_*.json`，数据版本为 `4.0-temperature-state-json`：
+
+- 静态输入是 `responses.static.disp`，形状 `[temperature_steps, static_nodes, 3]`，当前为 `[6, 6, 3]`；温度由 `environment.temperature.temperature_steps_C` 对齐。
+- 动态输入是 `responses.dynamic.ace`，形状 `[time_steps, dynamic_nodes, 3]`，当前为 `[4000, 6, 3]`。
+- 标签统一读取 `safety_labels`；`material_scaling_factors` 只用于监督和审计，不作为模型输入。
+- 静态分支不再把旧版 `strain` 作为主输入；兼容层仍可读取旧版平铺 JSON。
+
+最小链路检查：
+
+```powershell
+python DL_model/main.py --model static_only --epochs 1 --batch 2 --data-dir E:/working/DL_data/data_new
+```

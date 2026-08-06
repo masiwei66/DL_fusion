@@ -4,17 +4,13 @@
 其他绘图模块统一从本模块导入常量，保证全项目出图风格一致。
 """
 
-import os
-import sys
-
 # —— 业务常量导入 ——
-# 将 DL_model 目录加入模块搜索路径，以便导入安全规则相关常量。
-# 脚本直接运行时该目录通常已在 sys.path 中，此处重复插入是为了兼容以包方式导入的场景。
-_DL_MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "DL_model")
-if _DL_MODEL_DIR not in sys.path:
-    sys.path.insert(0, _DL_MODEL_DIR)
-
-from safety_rules import CANDIDATE_MATERIAL_IDS, RISK_LEVELS
+# 优先以包方式导入（便于 IDE 静态解析，且避免 sys.path 技巧）；
+# 直接运行脚本且项目根目录不在搜索路径时，回退为扁平导入。
+try:
+    from DL_model.safety_rules import CANDIDATE_MATERIAL_IDS, RISK_LEVELS
+except ImportError:
+    from safety_rules import CANDIDATE_MATERIAL_IDS, RISK_LEVELS
 
 # 候选材料 ID 的简写别名（与原 plotting.py 保持一致）
 CANDIDATE_IDS = CANDIDATE_MATERIAL_IDS

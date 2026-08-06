@@ -757,6 +757,11 @@ def main():
         help="Corrected-model dataset used for train/val/same-domain test.",
     )
     parser.add_argument(
+        "--data-dir",
+        dest="corrected_data_dir",
+        help="Alias for --corrected-data-dir; points to a result_*.json directory.",
+    )
+    parser.add_argument(
         "--reference-data-dir",
         default=None,
         help="Reference-model dataset used only for cross-domain testing.",

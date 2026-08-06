@@ -172,6 +172,7 @@ def collate_fn(batch, static_pos, dynamic_pos):
         "global_target",
         "condition",
         "temperature_C",
+        "temperature_steps_C",
     ]
     out = {key: torch.stack([b[key] for b in batch]) for key in keys}
     out["static_pos"] = static_pos

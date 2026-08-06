@@ -27,8 +27,9 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 class Config:
     """Training, model, data, and engineering-rule hyperparameters."""
 
-    data_root = "E:/working/DL_data/data"
-    corrected_data_dir = os.path.join(data_root, "corrected_model_dataset")
+    # V2 temperature-state dataset is the canonical training input.
+    data_root = "E:/working/DL_data/data_new"
+    corrected_data_dir = data_root
     reference_data_dir = os.path.join(data_root, "reference_model_dataset")
     data_dir = corrected_data_dir
     save_root = os.path.join(_DIR, "checkpoints")
@@ -45,11 +46,11 @@ class Config:
     n_regions = len(REGION_DEFINITIONS)
     n_safety_levels = 4
     support_disp_scale_mm = SUPPORT_SETTLEMENT_MAX_MM
-    static_steps = 4
+    static_steps = 6
     static_channels = 3
-    n_static_nodes = 3
+    n_static_nodes = 6
     dynamic_channels = 3
-    n_dynamic_nodes = 5
+    n_dynamic_nodes = 6
     temperature_condition_scale = 0.1
     static_node_ids = None
     dynamic_node_ids = None

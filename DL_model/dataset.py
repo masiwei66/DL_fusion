@@ -55,13 +55,32 @@ def _response_map(sample, *keys):
     return None
 
 
+def _nested_response(sample, response_key):
+    """Return a response from either the legacy flat or V2 nested schema."""
+    if response_key in sample:
+        return sample[response_key]
+    paths = {
+        "disp": ("responses", "static", "disp"),
+        "strain": ("responses", "static", "strain"),
+        "ace": ("responses", "dynamic", "ace"),
+        "time_s": ("responses", "dynamic", "time_s"),
+        "force_N": ("responses", "dynamic", "force_N"),
+    }
+    current = sample
+    for key in paths.get(response_key, ()):
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
 def _nodes_from_sample(sample, response_key, fallback_nodes, *map_keys):
     node_map = _response_map(sample, *(map_keys or (response_key,)))
     if node_map:
         return _ordered_nodes_from_map(node_map)
     if fallback_nodes:
         return [int(n) for n in fallback_nodes]
-    response = sample.get(response_key)
+    response = _nested_response(sample, response_key)
     if response is None:
         return []
     return list(range(np.asarray(response).shape[1]))
@@ -145,14 +164,16 @@ def _stored_response_values(sample, response_keys):
 
 
 def _response_value(sample, response_key):
-    if response_key in sample:
-        return sample[response_key]
+    nested = _nested_response(sample, response_key)
+    if nested is not None:
+        return nested
     return _stored_response_values(sample, [response_key])[response_key]
 
 
 def _has_response(sample, response_key):
-    return response_key in sample or response_key in (
-        sample.get("array_store", {}).get("datasets", {})
+    return (
+        _nested_response(sample, response_key) is not None
+        or response_key in sample.get("array_store", {}).get("datasets", {})
     )
 
 
@@ -181,14 +202,14 @@ def _as_response_array(sample, response_key, node_ids, *map_keys):
 
 def _temperature_condition(sample):
     temperature = sample.get("environment", {}).get("temperature", {}) or {}
+    values = temperature.get("temperature_steps_C", [])
     value = temperature.get("value_C")
     if value is None:
-        values = temperature.get("temperature_steps_C", [])
-        value = values[0] if values else temperature.get("reference_temperature_C", 0.0)
+        value = float(np.mean(values)) if values else temperature.get(
+            "reference_temperature_C", 0.0
+        )
     reference = float(temperature.get("reference_temperature_C", 0.0))
     delta = float(value) - reference
-    if not str(sample.get("schema_version", "")).startswith("3."):
-        delta = 0.0
     return float(value), delta
 
 
@@ -319,6 +340,15 @@ class StructuralDataset(Dataset):
         self.condition = torch.tensor(
             [[delta / 20.0] for _value, delta in conditions], dtype=torch.float32
         )
+        self.temperature_steps_c = torch.tensor(
+            [
+                sample.get("environment", {})
+                .get("temperature", {})
+                .get("temperature_steps_C", [value])
+                for sample, (value, _delta) in zip(samples, conditions)
+            ],
+            dtype=torch.float32,
+        )
 
         self.group_damage_pattern = self._build_damage_pattern_groups()
         self.group_scaling_bin = self._build_scaling_bin_groups()
@@ -337,7 +367,9 @@ class StructuralDataset(Dataset):
         local_sample = sample
         stored_keys = [
             key for key in ("disp", "strain", "ace")
-            if key not in sample and _has_response(sample, key)
+            if key not in sample
+            and _nested_response(sample, key) is None
+            and _has_response(sample, key)
         ]
         if stored_keys:
             local_sample = dict(sample)
@@ -580,4 +612,5 @@ class StructuralDataset(Dataset):
             "global_target": self.global_targets[idx],
             "condition": self.condition[idx],
             "temperature_C": self.temperature_c[idx],
+            "temperature_steps_C": self.temperature_steps_c[idx],
         }

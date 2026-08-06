@@ -117,14 +117,19 @@ class AttentionPool(nn.Module):
 
 
 class StaticBranch(nn.Module):
-    """Static displacement/strain branch with position FiLM and attention pooling."""
+    """Multi-temperature displacement branch with position FiLM.
+
+    V2 intentionally removes the legacy strain input.  ``strain`` remains an
+    optional argument so older callers can still invoke the branch while the
+    network contract is defined solely by temperature-aligned displacement.
+    """
 
     def __init__(self, pos_dim=16, hidden_dim=128, out_dim=64,
                  n_steps=4, n_channels=3):
         super().__init__()
         self.pos_enc = PositionEncoding(pos_dim=pos_dim)
 
-        node_input_dim = int(n_steps) * int(n_channels) * 2
+        node_input_dim = int(n_steps) * int(n_channels)
         self.node_mlp = nn.Sequential(OrderedDict([
             ('fc1', nn.Linear(node_input_dim, hidden_dim)),
             ('bn1', SafeBN(hidden_dim)),
@@ -140,13 +145,14 @@ class StaticBranch(nn.Module):
         self.pool = AttentionPool(out_dim)
         self.out_norm = nn.LayerNorm(out_dim)
 
-    def forward(self, disp, strain, node_coords):
+    def forward(self, disp, strain=None, node_coords=None):
+        if node_coords is None:
+            node_coords = strain
         batch_size = disp.size(0)
         n_nodes = disp.size(2)
 
         disp_feat = disp.permute(0, 2, 1, 3).reshape(batch_size, n_nodes, -1)
-        strain_feat = strain.permute(0, 2, 1, 3).reshape(batch_size, n_nodes, -1)
-        node_feat = torch.cat([disp_feat, strain_feat], dim=-1)
+        node_feat = disp_feat
 
         tokens = self.node_mlp(node_feat.reshape(-1, node_feat.size(-1)))
         tokens = tokens.view(batch_size, n_nodes, -1)

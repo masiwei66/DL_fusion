@@ -25,6 +25,32 @@ from .comparison import (
     extract_reference_summaries,
 )
 
+
+def load_v2_sample(*args, **kwargs):
+    from .data_visualization import load_v2_sample as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def plot_sample_responses(*args, **kwargs):
+    from .data_visualization import plot_sample_responses as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def plot_temperature_displacement(*args, **kwargs):
+    from .data_visualization import (
+        plot_temperature_displacement as implementation,
+    )
+
+    return implementation(*args, **kwargs)
+
+
+def plot_vibration_timeseries(*args, **kwargs):
+    from .data_visualization import plot_vibration_timeseries as implementation
+
+    return implementation(*args, **kwargs)
+
 __all__ = [
     "save_prediction_figures",
     "plot_prediction_material",
@@ -39,4 +65,8 @@ __all__ = [
     "plot_paper_figures",
     "plot_domain_comparison",
     "extract_reference_summaries",
+    "load_v2_sample",
+    "plot_sample_responses",
+    "plot_temperature_displacement",
+    "plot_vibration_timeseries",
 ]
