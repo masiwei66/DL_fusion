@@ -20,6 +20,8 @@ env/
 # Project artifacts
 checkpoints/
 logs/
+!plot/logs/
+!plot/logs/regenerate_plots.py
 outputs/
 outputs_cli_check/
 *.pth
