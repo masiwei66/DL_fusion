@@ -188,7 +188,7 @@ def make_loader(dataset, indices, static_pos, dynamic_pos, shuffle, config):
         shuffle=shuffle,
         collate_fn=lambda b: collate_fn(b, static_pos, dynamic_pos),
         num_workers=config.num_workers,
-        pin_memory=(config.device == "cuda"),
+        pin_memory=False,
     )
 
 

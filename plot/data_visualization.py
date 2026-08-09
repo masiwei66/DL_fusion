@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
+
+if __package__ in (None, ""):  # 以脚本方式直接运行时，声明包名并加入搜索路径
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "plot"
 
 from ._config import GRID_COLOR
 from ._utils import _configure_chinese_font

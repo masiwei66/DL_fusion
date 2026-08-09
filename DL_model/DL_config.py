@@ -84,9 +84,9 @@ class Config:
     fusion_branch_weight = 0.0
     fusion_gate_weight = 0.0
     fusion_warm_start = True
-    fusion_train_alpha_only = True
+    fusion_train_alpha_only = False
     fusion_anchor = "static"
-    fusion_safety_source = "static"
+    fusion_safety_source = "fused"
     fusion_alpha_init = [0.90, 0.90, 0.90, 0.90, 0.20, 0.90]
     fusion_alpha_l2_weight = 0.02
     fusion_gate_bias = -2.0

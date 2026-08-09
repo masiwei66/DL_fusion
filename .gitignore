@@ -21,7 +21,7 @@ env/
 checkpoints/
 logs/
 !plot/logs/
-!plot/logs/regenerate_plots.py
+!plot/logs/*.py
 outputs/
 outputs_cli_check/
 *.pth
