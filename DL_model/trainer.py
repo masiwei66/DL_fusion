@@ -1,5 +1,7 @@
 """用于多工况安全评估的训练与评估工具。"""
 
+import json
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -173,10 +175,12 @@ def collate_fn(batch, static_pos, dynamic_pos):
         "condition",
         "temperature_C",
         "temperature_steps_C",
+        "quality_metrics",
     ]
     out = {key: torch.stack([b[key] for b in batch]) for key in keys}
     out["static_pos"] = static_pos
     out["dynamic_pos"] = dynamic_pos
+    out["metadata"] = [b.get("metadata", {}) for b in batch]
     return out
 
 
@@ -501,8 +505,79 @@ def train_epoch(model, loader, optimizer, criterion_cls, criterion_reg, config, 
     return total_loss / len(loader), compute_metrics(y_true, y_pred, y_prob)
 
 
+def _label_dict(label_ids, values, cast=float):
+    return {str(label_id): cast(values[i]) for i, label_id in enumerate(label_ids)}
+
+
+def build_prediction_rows(
+    metadata,
+    mat_true,
+    mat_pred,
+    mat_prob,
+    support_true=None,
+    support_pred=None,
+    support_prob=None,
+    support_disp_true=None,
+    support_disp_pred=None,
+    region_true=None,
+    region_pred=None,
+    global_true=None,
+    global_pred=None,
+    region_names=None,
+):
+    rows = []
+    region_names = region_names or []
+    for i, meta in enumerate(metadata):
+        row = dict(meta)
+        row["material_true"] = _label_dict(CANDIDATE_IDS, mat_true[i], int)
+        row["material_pred"] = _label_dict(CANDIDATE_IDS, mat_pred[i], int)
+        row["material_prob"] = _label_dict(CANDIDATE_IDS, mat_prob[i], float)
+        if support_true is not None:
+            row["support_true"] = _label_dict(SUPPORT_NODES, support_true[i], int)
+            row["support_pred"] = _label_dict(SUPPORT_NODES, support_pred[i], int)
+            row["support_prob"] = _label_dict(SUPPORT_NODES, support_prob[i], float)
+            row["support_disp_true_mm"] = _label_dict(
+                SUPPORT_NODES, support_disp_true[i], float
+            )
+            row["support_disp_pred_mm"] = _label_dict(
+                SUPPORT_NODES, support_disp_pred[i], float
+            )
+        if region_true is not None:
+            row["region_true"] = {
+                str(name): int(region_true[i, j])
+                for j, name in enumerate(region_names)
+            }
+            row["region_pred"] = {
+                str(name): int(region_pred[i, j])
+                for j, name in enumerate(region_names)
+            }
+        if global_true is not None:
+            row["global_true"] = int(global_true[i])
+            row["global_pred"] = int(global_pred[i])
+        rows.append(row)
+    return rows
+
+
+def save_sample_predictions(path, rows, metadata=None):
+    payload = {
+        "metadata": metadata or {},
+        "records": rows,
+    }
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, indent=2, ensure_ascii=False)
+
+
 @torch.no_grad()
-def validate(model, loader, criterion_cls, criterion_reg, config, desc="Val", tune_thresholds=False):
+def validate(
+    model,
+    loader,
+    criterion_cls,
+    criterion_reg,
+    config,
+    desc="Val",
+    tune_thresholds=False,
+    return_predictions=False,
+):
     model.eval()
     total_loss = 0.0
     is_pretrain = getattr(model, "stage", None) == "pretrain"
@@ -510,13 +585,16 @@ def validate(model, loader, criterion_cls, criterion_reg, config, desc="Val", tu
     all_mat_true, all_mat_prob = [], []
     all_support_true, all_support_prob = [], []
     all_region_true, all_region_pred = [], []
+    all_global_true, all_global_pred = [], []
     all_support_disp_true, all_support_disp_pred = [], []
     all_gate, all_disagreement = [], []
+    all_metadata = []
     fusion_alpha = None
 
     for batch in tqdm(loader, desc=desc, leave=False):
         _move_batch(batch, config.device)
         target = batch["target"]
+        all_metadata.extend(batch.get("metadata", []))
 
         if is_pretrain:
             static_logits, _static_reg, _dynamic_logits, _dynamic_reg, _s_feat, _d_feat = model(batch)
@@ -534,6 +612,8 @@ def validate(model, loader, criterion_cls, criterion_reg, config, desc="Val", tu
             all_support_prob.append(torch.sigmoid(output["support_logits"]).cpu())
             all_region_true.append(batch["region_target"].cpu())
             all_region_pred.append(output["region_logits"].argmax(dim=-1).cpu())
+            all_global_true.append(batch["global_target"].cpu())
+            all_global_pred.append(output["global_logits"].argmax(dim=-1).cpu())
             all_support_disp_true.append(batch["support_disp"].cpu())
             all_support_disp_pred.append(
                 (torch.sigmoid(output["support_reg"]) * float(config.support_disp_scale_mm)).cpu()
@@ -575,11 +655,14 @@ def validate(model, loader, criterion_cls, criterion_reg, config, desc="Val", tu
         support_pred = (support_prob > 0.5).astype("float32")
         region_true = torch.cat(all_region_true).numpy()
         region_pred = torch.cat(all_region_pred).numpy()
+        global_true = torch.cat(all_global_true).numpy()
+        global_pred = torch.cat(all_global_pred).numpy()
         support_disp_true = torch.cat(all_support_disp_true).numpy()
         support_disp_pred = torch.cat(all_support_disp_pred).numpy()
     else:
         support_true = support_prob = support_pred = None
         region_true = region_pred = None
+        global_true = global_pred = None
         support_disp_true = support_disp_pred = None
 
     metrics = compute_full_metrics(
@@ -621,4 +704,23 @@ def validate(model, loader, criterion_cls, criterion_reg, config, desc="Val", tu
             metrics[f"branch_disagreement_mean_{label_id}"] = float(
                 disagreement[:, i].mean()
             )
-    return avg_loss, metrics, (y_true, y_pred, y_prob)
+    results = (y_true, y_pred, y_prob)
+    if not return_predictions:
+        return avg_loss, metrics, results
+    rows = build_prediction_rows(
+        all_metadata,
+        y_true,
+        y_pred,
+        y_prob,
+        support_true=support_true,
+        support_pred=support_pred,
+        support_prob=support_prob,
+        support_disp_true=support_disp_true,
+        support_disp_pred=support_disp_pred,
+        region_true=region_true,
+        region_pred=region_pred,
+        global_true=global_true,
+        global_pred=global_pred,
+        region_names=getattr(config, "region_names", None),
+    )
+    return avg_loss, metrics, results, rows

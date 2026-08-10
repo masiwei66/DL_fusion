@@ -28,12 +28,16 @@ class Config:
     """训练、模型、数据及工程规则相关的超参数。"""
 
     # V2 温度状态数据集是标准训练输入。
-    data_root = "E:/working/DL_data/data_new"
+    data_root = "E:/working/DL_data/temperature_multistep_json_result"
     corrected_data_dir = data_root
     reference_data_dir = os.path.join(data_root, "reference_model_dataset")
     data_dir = corrected_data_dir
     save_root = os.path.join(_DIR, "checkpoints")
     log_root = os.path.join(_DIR, "logs")
+    experiment_root = os.path.join(_DIR, "runs")
+    data_version = "temperature_multistep_json_result"
+    run_id = None
+    split_manifest = None
     model_type = "fusion"
     run_name = "fusion"
 

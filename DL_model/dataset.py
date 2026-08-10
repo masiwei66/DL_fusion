@@ -213,6 +213,74 @@ def _temperature_condition(sample):
     return float(value), delta
 
 
+def _file_sha256(path):
+    hasher = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _sample_metadata(sample, path, index):
+    sample_index = sample.get("sample_index", {}) or {}
+    structural_state = sample.get("structural_state", {}) or {}
+    excitation = sample.get("dynamic_excitation", {}) or {}
+    temperature = sample.get("environment", {}).get("temperature", {}) or {}
+    return {
+        "index": int(index),
+        "sample_id": str(sample_index.get("sample_id", f"sample_{index:06d}")),
+        "filename": os.path.basename(path),
+        "path": os.path.abspath(path),
+        "data_domain": sample_index.get("data_domain"),
+        "structural_state_id": str(
+            sample_index.get(
+                "structural_state_id",
+                sample_index.get("group_id", f"state_{index:06d}"),
+            )
+        ),
+        "state_family_id": str(
+            sample_index.get(
+                "state_family_id",
+                sample_index.get("condition_group", sample_index.get("group_id", "")),
+            )
+        ),
+        "condition_group": sample_index.get("condition_group"),
+        "scenario": structural_state.get("scenario"),
+        "structural_state_seed": structural_state.get("random_seed"),
+        "excitation_id": excitation.get(
+            "excitation_id", structural_state.get("excitation_id")
+        ),
+        "excitation_index": excitation.get(
+            "excitation_index", structural_state.get("excitation_index")
+        ),
+        "excitation_seed": excitation.get(
+            "random_seed", structural_state.get("excitation_random_seed")
+        ),
+        "temperature_seed": temperature.get("random_seed"),
+    }
+
+
+def _quality_scalar(value):
+    """把质量指标值转为标量：标量或单元素数值列表/元组返回数值，否则返回 None。"""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        item = value[0]
+        if isinstance(item, (int, float)):
+            return float(item)
+    return None
+
+
+def _numeric_quality_keys(samples):
+    keys = set()
+    for sample in samples:
+        metrics = sample.get("quality_metrics", {}) or {}
+        for key, value in metrics.items():
+            if _quality_scalar(value) is not None:
+                keys.add(key)
+    return sorted(keys)
+
+
 class StructuralDataset(Dataset):
     """从 result_*.json 加载响应张量以及工况/安全标签。"""
 
@@ -275,6 +343,31 @@ class StructuralDataset(Dataset):
         self.n_samples = len(samples)
         self.files = files
         self.samples = samples
+        self.sample_metadata = [
+            _sample_metadata(sample, path, index)
+            for index, (sample, path) in enumerate(zip(samples, files))
+        ]
+        self.quality_feature_names = _numeric_quality_keys(samples)
+        dropped_quality = sorted(
+            {
+                key
+                for sample in samples
+                for key in (sample.get("quality_metrics", {}) or {})
+            }
+            - set(self.quality_feature_names)
+        )
+        if dropped_quality:
+            print(f"  Warning: quality metrics skipped (not scalar): {dropped_quality}")
+        self.quality_features = torch.tensor(
+            [
+                [
+                    _quality_scalar((sample.get("quality_metrics", {}) or {}).get(key)) or 0.0
+                    for key in self.quality_feature_names
+                ]
+                for sample in samples
+            ],
+            dtype=torch.float32,
+        )
         self.lazy_responses = all(
             sample.get("array_store") and "disp" not in sample and "ace" not in sample
             for sample in samples
@@ -581,6 +674,12 @@ class StructuralDataset(Dataset):
             raise ValueError(f"unknown group_by: {group_by}")
         return groups[group_by]
 
+    def get_sample_metadata(self, index, include_hash=False):
+        metadata = dict(self.sample_metadata[int(index)])
+        if include_hash:
+            metadata["sha256"] = _file_sha256(metadata["path"])
+        return metadata
+
     def __len__(self):
         return self.n_samples
 
@@ -613,4 +712,6 @@ class StructuralDataset(Dataset):
             "condition": self.condition[idx],
             "temperature_C": self.temperature_c[idx],
             "temperature_steps_C": self.temperature_steps_c[idx],
+            "quality_metrics": self.quality_features[idx],
+            "metadata": self.get_sample_metadata(idx),
         }

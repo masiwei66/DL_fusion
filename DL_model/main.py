@@ -1,11 +1,13 @@
 """训练、评估、推理与绘图的入口程序。"""
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 import time
 from copy import deepcopy
+from datetime import datetime
 
 # 将项目根目录加入模块搜索路径，确保绘图包 plot 可被导入
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,7 +30,14 @@ from plot import (
     plot_paper_figures,
     save_gate_diagnostics,
 )
-from trainer import EMAModel, make_loader, print_metrics, train_epoch, validate
+from trainer import (
+    EMAModel,
+    make_loader,
+    print_metrics,
+    save_sample_predictions,
+    train_epoch,
+    validate,
+)
 
 
 MODEL_TYPES = ("static_only", "dynamic_only", "fusion")
@@ -39,6 +48,7 @@ def config_to_dict(cfg):
     keys = [
         "data_root", "corrected_data_dir", "reference_data_dir",
         "data_dir", "save_root", "log_root", "save_dir", "log_dir",
+        "experiment_root", "data_version", "run_id", "split_manifest",
         "model_type", "run_name", "pos_dim", "static_dim", "dynamic_dim",
         "fusion_dim", "n_materials", "n_supports", "n_regions",
         "n_safety_levels", "support_disp_scale_mm",
@@ -81,6 +91,137 @@ def config_to_dict(cfg):
         "label_smoothing", "ema_decay", "seed", "num_workers", "device",
     ]
     return {k: getattr(cfg, k) for k in keys if hasattr(cfg, k)}
+
+
+def _json_sha256(payload):
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _file_sha256(path):
+    hasher = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _default_run_id():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def configure_run_dirs(cfg, output_dir=None):
+    """配置本次实验输出目录；未显式指定 run 时保持旧目录兼容。"""
+    if not getattr(cfg, "run_id", None) and not output_dir:
+        return
+    root = output_dir or os.path.join(cfg.experiment_root, cfg.data_version, cfg.run_id)
+    cfg.save_root = os.path.join(root, "checkpoints")
+    cfg.log_root = os.path.join(root, "logs")
+    cfg.set_model_type(cfg.model_type)
+    os.makedirs(cfg.save_root, exist_ok=True)
+    os.makedirs(cfg.log_root, exist_ok=True)
+
+
+def split_records(dataset, splits):
+    records = []
+    for split_name, indices in splits.items():
+        for index in indices:
+            record = dataset.get_sample_metadata(index, include_hash=True)
+            record["split"] = split_name
+            records.append(record)
+    return records
+
+
+def save_split_manifest(cfg, dataset, train_idx, val_idx, test_idx):
+    records = split_records(
+        dataset,
+        {"train": train_idx, "val": val_idx, "test": test_idx},
+    )
+    payload = {
+        "data_version": cfg.data_version,
+        "data_dir": os.path.abspath(cfg.data_dir),
+        "split_strategy": cfg.split_strategy,
+        "group_by": cfg.group_by,
+        "seed": cfg.seed,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "train": len(train_idx),
+            "val": len(val_idx),
+            "test": len(test_idx),
+        },
+        "records": records,
+    }
+    payload["manifest_sha256"] = _json_sha256({k: v for k, v in payload.items() if k != "manifest_sha256"})
+    os.makedirs(cfg.log_root, exist_ok=True)
+    path = os.path.join(cfg.log_root, "split_manifest.json")
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+    cfg.split_manifest = path
+    print(f"Saved split manifest: {path}")
+    return path
+
+
+def load_split_manifest(path, dataset, verify_hashes=True):
+    with open(path, encoding="utf-8") as file:
+        manifest = json.load(file)
+    by_sample_id = {
+        meta.get("sample_id"): index
+        for index, meta in enumerate(dataset.sample_metadata)
+        if meta.get("sample_id")
+    }
+    by_filename = {
+        meta.get("filename"): index
+        for index, meta in enumerate(dataset.sample_metadata)
+        if meta.get("filename")
+    }
+    splits = {"train": [], "val": [], "test": []}
+    resolved = []  # (record, index) 用于加载后的哈希校验
+    missing = []
+    for record in manifest.get("records", []):
+        split_name = record.get("split")
+        if split_name not in splits:
+            continue
+        index = by_sample_id.get(record.get("sample_id"))
+        if index is None:
+            index = by_filename.get(record.get("filename"))
+        if index is None:
+            missing.append(record.get("sample_id") or record.get("filename"))
+            continue
+        splits[split_name].append(index)
+        resolved.append((record, index))
+    if missing:
+        preview = ", ".join(str(x) for x in missing[:5])
+        raise ValueError(f"split manifest has samples not in dataset: {preview}")
+    assigned = sum(len(v) for v in splits.values())
+    if assigned != len(dataset):
+        raise ValueError(
+            f"split manifest assigned {assigned} samples, dataset has {len(dataset)}"
+        )
+    if verify_hashes:
+        changed = []
+        for record, index in resolved:
+            expected = record.get("sha256")
+            if not expected:
+                continue
+            actual = _file_sha256(dataset.files[index])
+            if actual != expected:
+                changed.append(
+                    (
+                        record.get("sample_id") or record.get("filename"),
+                        expected[:12],
+                        actual[:12],
+                    )
+                )
+        if changed:
+            preview = ", ".join(
+                f"{name} ({expected} -> {actual})"
+                for name, expected, actual in changed[:5]
+            )
+            raise ValueError(
+                f"split manifest does not match dataset files (sha256 changed): {preview}"
+            )
+    print(f"Loaded split manifest: {path}")
+    return splits["train"], splits["val"], splits["test"]
 
 
 def split_indices(dataset_or_n, cfg):
@@ -378,6 +519,7 @@ def _save_checkpoint(cfg, ckpt_data, dataset, pos_weight, train_idx, val_idx, te
         "history": history,
         "normalizer": dataset.normalizer_state_dict(),
         "split_indices": {"train": train_idx, "val": val_idx, "test": test_idx},
+        "split_manifest": getattr(cfg, "split_manifest", None),
         "pos_weight": pos_weight.cpu(),
     })
     if hasattr(cfg, "eval_thresholds"):
@@ -518,11 +660,26 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
         if "eval_thresholds" in ckpt:
             cfg.eval_thresholds = np.asarray(ckpt["eval_thresholds"], dtype=np.float32)
         print(f"Loaded checkpoint: {ckpt_path} (epoch {ckpt['epoch']})")
-        test_loss, test_metrics, test_results = validate(
-            model, test_loader, criterion_cls, criterion_reg, cfg, desc=f"Test {model_type}"
+        test_loss, test_metrics, test_results, test_rows = validate(
+            model,
+            test_loader,
+            criterion_cls,
+            criterion_reg,
+            cfg,
+            desc=f"Test {model_type}",
+            return_predictions=True,
         )
         print_metrics(test_metrics)
         plot_evaluation(*test_results, os.path.join(cfg.log_dir, f"{cfg.run_name}_evaluation.png"))
+        save_sample_predictions(
+            os.path.join(cfg.log_dir, f"{cfg.run_name}_test_predictions.json"),
+            test_rows,
+            metadata={
+                "model_type": model_type,
+                "mode": "test",
+                "checkpoint": ckpt_path,
+            },
+        )
         summary = {"model_type": model_type, "test_loss": test_loss, **test_metrics}
         if reference_dataset is not None:
             reference_dataset.load_normalizer_state_dict(ckpt.get("normalizer"))
@@ -691,13 +848,28 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
     if hasattr(model, 'set_stage'):
         model.set_stage('finetune')
 
-    test_loss, test_metrics, test_results = validate(
-        model, test_loader, criterion_cls, criterion_reg, cfg, desc=f"Test {model_type}"
+    test_loss, test_metrics, test_results, test_rows = validate(
+        model,
+        test_loader,
+        criterion_cls,
+        criterion_reg,
+        cfg,
+        desc=f"Test {model_type}",
+        return_predictions=True,
     )
 
     print(f"\n[{model_type}] Test results")
     print_metrics(test_metrics)
     plot_evaluation(*test_results, os.path.join(cfg.log_dir, f"{cfg.run_name}_evaluation.png"))
+    save_sample_predictions(
+        os.path.join(cfg.log_dir, f"{cfg.run_name}_test_predictions.json"),
+        test_rows,
+        metadata={
+            "model_type": model_type,
+            "mode": "train_final_test",
+            "checkpoint": checkpoint_path(cfg),
+        },
+    )
     if model_type == "fusion":
         save_gate_diagnostics(
             test_metrics,
@@ -747,6 +919,10 @@ def main():
     )
     parser.add_argument("--input", default=None, help="用于推理的 JSON 文件")
     parser.add_argument("--resume", default=None, help="用于恢复/测试/推理的检查点路径")
+    parser.add_argument("--run-id", default=None, help="训练时的实验 ID；为空则自动生成")
+    parser.add_argument("--output-dir", default=None, help="实验输出根目录；默认写入 runs/<data_version>/<run_id>")
+    parser.add_argument("--split-manifest", default=None, help="复用已有的样本级划分清单 JSON")
+    parser.add_argument("--data-version", default=None, help="覆盖数据版本名")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
@@ -769,6 +945,8 @@ def main():
     args = parser.parse_args()
 
     cfg = Config()
+    if args.data_version:
+        cfg.data_version = args.data_version
     if args.corrected_data_dir:
         cfg.corrected_data_dir = args.corrected_data_dir
     if args.reference_data_dir:
@@ -783,6 +961,13 @@ def main():
     cfg.seed = args.seed
     if args.model != "all":
         cfg.set_model_type(args.model)
+    if args.mode == "train":
+        cfg.run_id = args.run_id or _default_run_id()
+        if args.split_manifest:
+            cfg.split_manifest = args.split_manifest
+        configure_run_dirs(cfg, args.output_dir)
+    elif args.output_dir:
+        configure_run_dirs(cfg, args.output_dir)
 
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -836,7 +1021,13 @@ def main():
     print("Loading corrected-model dataset...")
     dataset = StructuralDataset(cfg.corrected_data_dir, normalize=True, fit_normalizer=False)
     dataset.apply_to_config(cfg)
-    train_idx, val_idx, test_idx = split_indices(dataset, cfg)
+    if args.split_manifest:
+        train_idx, val_idx, test_idx = load_split_manifest(args.split_manifest, dataset)
+        cfg.split_manifest = args.split_manifest
+    else:
+        train_idx, val_idx, test_idx = split_indices(dataset, cfg)
+        if args.mode == "train":
+            save_split_manifest(cfg, dataset, train_idx, val_idx, test_idx)
     print(f"Split: train={len(train_idx)} val={len(val_idx)} test={len(test_idx)}")
 
     reference_dataset = None
