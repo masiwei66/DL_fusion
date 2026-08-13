@@ -392,6 +392,7 @@ def train_epoch(model, loader, optimizer, criterion_cls, criterion_reg, config, 
     for batch in tqdm(loader, desc=f"Train E{epoch}", leave=False):
         _move_batch(batch, config.device)
 
+        # 数据增强，：增强只发生在训练循环里——validate（评估）不会调用它，所以测试时数据是干净的。
         if getattr(config, "model_type", "") in ("dynamic_only", "fusion"):
             batch["ace"] = augment_dynamic_response(batch["ace"], config)
         if getattr(config, "model_type", "") in ("static_only", "fusion"):

@@ -45,10 +45,12 @@ class PositionEncoding(nn.Module):
     桥梁模型中的坐标单位为毫米，数值可能较大。编码器首先将每个传感器
     布局转换为居中且经过尺度归一化的相对坐标，然后在小规模 MLP 之前
     加入傅里叶特征。这样既保留了几何信息的表达能力，又不会将原始坐标
-    尺度注入到响应通道中。
+    尺度注入到响应通道中。解决思路：坐标 → 归一化 → 傅里叶展开 → MLP
+    直接坐标让网络"看不清"细微差异，sin/cos 把差异放大
     """
 
     def __init__(self, input_dim=3, pos_dim=16, num_freqs=4):
+        # ：这里的频率是"正弦波震荡的快慢"——4 个频率 = 4 个粗细不同的刻度，让神经网络能从多个尺度分辨测点位置
         super().__init__()
         self.num_freqs = num_freqs
         fourier_dim = input_dim * (1 + 2 * num_freqs)
@@ -79,11 +81,12 @@ class PositionEncoding(nn.Module):
             torch.sin(angles).flatten(1),
             torch.cos(angles).flatten(1),
         ], dim=-1)
+        # 每个测点的位置指纹——"原始坐标 + 每个频率下的 sin/cos 响应
         return self.mlp(fourier)
 
 
 class PositionFiLM(nn.Module):
-    """基于位置嵌入的特征级线性调制（FiLM）。"""
+    """基于位置嵌入的特征级线性调制（FiLM） Feature-wise Linear Modulation。"""
 
     def __init__(self, pos_dim, feat_dim, scale=0.1):
         super().__init__()
