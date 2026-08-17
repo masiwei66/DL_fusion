@@ -8,6 +8,7 @@ import glob
 import hashlib
 import json
 import os
+from collections import Counter
 
 import h5py
 import numpy as np
@@ -260,6 +261,35 @@ def _sample_metadata(sample, path, index):
     }
 
 
+def _ensure_unique_sample_ids(metadata):
+    """为重复的源 sample_id 生成稳定的记录级 ID，并保留原值供追溯。"""
+    source_ids = [
+        "" if item.get("sample_id") in (None, "") else str(item["sample_id"])
+        for item in metadata
+    ]
+    counts = Counter(source_ids)
+    used = set()
+    for item, source_id in zip(metadata, source_ids):
+        item["source_sample_id"] = source_id
+        candidate = source_id
+        if not source_id or counts[source_id] > 1:
+            excitation_id = item.get("excitation_id")
+            suffix = str(excitation_id) if excitation_id not in (None, "") else ""
+            if suffix:
+                candidate = f"{source_id or 'sample'}__{suffix}"
+            if not suffix or candidate in used:
+                stem = os.path.splitext(str(item.get("filename", "sample")))[0]
+                candidate = f"{source_id or 'sample'}__{stem}"
+        if candidate in used:
+            stem = os.path.splitext(str(item.get("filename", "sample")))[0]
+            candidate = f"{source_id or 'sample'}__{stem}"
+        if candidate in used:
+            raise ValueError(f"cannot construct a unique sample_id for {item.get('filename')}")
+        item["sample_id"] = candidate
+        used.add(candidate)
+    return metadata
+
+
 def _quality_scalar(value):
     """把质量指标值转为标量：标量或单元素数值列表/元组返回数值，否则返回 None。"""
     if isinstance(value, (int, float)):
@@ -343,10 +373,10 @@ class StructuralDataset(Dataset):
         self.n_samples = len(samples)
         self.files = files
         self.samples = samples
-        self.sample_metadata = [
+        self.sample_metadata = _ensure_unique_sample_ids([
             _sample_metadata(sample, path, index)
             for index, (sample, path) in enumerate(zip(samples, files))
-        ]
+        ])
         self.quality_feature_names = _numeric_quality_keys(samples)
         dropped_quality = sorted(
             {

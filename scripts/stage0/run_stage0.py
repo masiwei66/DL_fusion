@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from statistics import mean
 
 from stage0_common import load_json, prepare_new_output_dir, save_json
 
@@ -102,6 +103,29 @@ def main():
                 negative_report,
             ))
 
+    negative_reports = [
+        result["report"]
+        for result in results
+        if result.get("report", {}).get("experiment") == "stage0.3"
+    ]
+    val_gaps = [report["details"]["validation"]["macro_auprc_gap"] for report in negative_reports]
+    test_gaps = [report["details"]["test"]["macro_auprc_gap"] for report in negative_reports]
+    negative_summary = {
+        "completed_seed_count": len(negative_reports),
+        "requested_seed_count": len(seeds),
+        "validation_macro_auprc_gap": {
+            "mean": mean(val_gaps) if val_gaps else None,
+            "min": min(val_gaps) if val_gaps else None,
+            "max": max(val_gaps) if val_gaps else None,
+        },
+        "test_macro_auprc_gap": {
+            "mean": mean(test_gaps) if test_gaps else None,
+            "min": min(test_gaps) if test_gaps else None,
+            "max": max(test_gaps) if test_gaps else None,
+        },
+        "note": "汇总仅用于稳定性诊断；总体通过仍要求每个预先指定的 seed 通过。",
+    }
+
     report = {
         "experiment": "stage0",
         "passed": all(result["passed"] for result in results),
@@ -111,6 +135,7 @@ def main():
         "work_dir": work_dir,
         "model": args.model,
         "negative_control_seeds": seeds,
+        "negative_control_summary": negative_summary,
         "results": results,
         "notes": [
             "0.2 是训练链路诊断，不是泛化性能实验。",

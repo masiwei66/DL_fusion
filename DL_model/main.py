@@ -164,10 +164,20 @@ def save_split_manifest(cfg, dataset, train_idx, val_idx, test_idx):
 def load_split_manifest(path, dataset, verify_hashes=True):
     with open(path, encoding="utf-8") as file:
         manifest = json.load(file)
+
+    sample_id_indices = {}
+    for index, meta in enumerate(dataset.sample_metadata):
+        sample_id = meta.get("sample_id")
+        if sample_id:
+            sample_id_indices.setdefault(sample_id, []).append(index)
     by_sample_id = {
-        meta.get("sample_id"): index
-        for index, meta in enumerate(dataset.sample_metadata)
-        if meta.get("sample_id")
+        sample_id: indices[0]
+        for sample_id, indices in sample_id_indices.items()
+        if len(indices) == 1
+    }
+    ambiguous_sample_ids = {
+        sample_id for sample_id, indices in sample_id_indices.items()
+        if len(indices) > 1
     }
     by_filename = {
         meta.get("filename"): index
@@ -177,21 +187,51 @@ def load_split_manifest(path, dataset, verify_hashes=True):
     splits = {"train": [], "val": [], "test": []}
     resolved = []  # (record, index) 用于加载后的哈希校验
     missing = []
+    ambiguous = []
+    assigned_indices = {}
+    duplicate_assignments = []
     for record in manifest.get("records", []):
         split_name = record.get("split")
         if split_name not in splits:
             continue
-        index = by_sample_id.get(record.get("sample_id"))
+        filename = record.get("filename")
+        if not filename and record.get("path"):
+            filename = os.path.basename(record["path"])
+        index = by_filename.get(filename) if filename else None
         if index is None:
-            index = by_filename.get(record.get("filename"))
+            sample_id = record.get("sample_id")
+            if sample_id in ambiguous_sample_ids:
+                ambiguous.append(sample_id)
+                continue
+            index = by_sample_id.get(sample_id)
         if index is None:
-            missing.append(record.get("sample_id") or record.get("filename"))
+            missing.append(filename or record.get("sample_id"))
             continue
+        record_name = filename or record.get("sample_id")
+        if index in assigned_indices:
+            duplicate_assignments.append((record_name, assigned_indices[index]))
+            continue
+        assigned_indices[index] = record_name
         splits[split_name].append(index)
         resolved.append((record, index))
+    if ambiguous:
+        preview = ", ".join(str(value) for value in sorted(set(ambiguous))[:5])
+        raise ValueError(
+            "split manifest uses non-unique sample_id values without a matching "
+            f"filename: {preview}"
+        )
     if missing:
         preview = ", ".join(str(x) for x in missing[:5])
         raise ValueError(f"split manifest has samples not in dataset: {preview}")
+    if duplicate_assignments:
+        preview = ", ".join(
+            f"{current} -> {previous}"
+            for current, previous in duplicate_assignments[:5]
+        )
+        raise ValueError(
+            "split manifest resolves multiple records to the same dataset sample: "
+            f"{preview}"
+        )
     assigned = sum(len(v) for v in splits.values())
     if assigned != len(dataset):
         raise ValueError(
@@ -207,7 +247,7 @@ def load_split_manifest(path, dataset, verify_hashes=True):
             if actual != expected:
                 changed.append(
                     (
-                        record.get("sample_id") or record.get("filename"),
+                        record.get("filename") or record.get("sample_id"),
                         expected[:12],
                         actual[:12],
                     )

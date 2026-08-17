@@ -75,7 +75,7 @@
 |---|---|---|---|
 | 0.1 单 batch 读数检查 | `check_smoke_batch.py` | 检查必需字段、精确 shape/dtype、有限值、标签范围、样本 ID，并执行 forward/backward | 全部检查通过、无 NaN/Inf、梯度有限 |
 | 0.2 小样本过拟合 | `make_smoke_dir.py` + `overfit_tiny.py` | 取 8–16 个样本（**全部用于训练**），关闭增强/EMA/标签平滑/正则/辅助任务，只优化材料 BCE，训练 20–50 epochs | loss 下降 ≥50%、训练集宏 F1 ≥0.90、Exact Match ≥0.75 |
-| 0.3 标签打乱负控 | `shuffle_labels.py` + `run_negative_control.py` | 按固定划分**仅置换 train 的监督束**（safety_labels + 缩放真值 + 支座真值整体置换），val/test 保留真实标签，输入响应断言不变；训练后与 prevalence 先验比较 | 梯度有限；val/test 宏 AUPRC 与先验差 ≤0.10；建议 3 个置换种子并报告 gap 均值与范围 |
+| 0.3 标签打乱负控 | `shuffle_labels.py` + `run_negative_control.py` | 按固定划分以 `structural_state_id` 为单位**仅置换 train 的监督束**（同一状态全部激励共享 donor；safety_labels + 缩放真值 + 支座真值整体置换），val/test 保留真实标签并核验哈希，输入响应断言不变；训练后与 prevalence 先验比较 | 分组互斥、donor 组错排、梯度有限；val/test 宏 AUPRC 与先验差 ≤0.10；3 个置换种子并报告 gap 均值与范围 |
 | 0.4 真值字段审计 | `check_smoke_batch.py`（白名单） | 模型 forward 只接收 `MODEL_INPUT_KEYS` 白名单观测量，全部监督字段在 forward 前剥离 | forward/backward 通过，无真值字段进入模型输入 |
 
 统一执行（推荐）：

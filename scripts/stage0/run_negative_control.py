@@ -18,12 +18,12 @@ sys.path.insert(0, os.path.join(_ROOT, "DL_model"))
 import numpy as np
 import torch
 
-from DL_config import Config
+from DL_config import CANDIDATE_IDS, Config
 from dataset import StructuralDataset
 from main import load_split_manifest
 from model import build_model
 from trainer import make_loader
-from stage0_common import report_envelope, save_json
+from stage0_common import load_json, report_envelope, save_json
 from stage0_train_utils import evaluate_material, prevalence_baseline, train_material_epoch
 
 
@@ -56,6 +56,40 @@ def main():
     train_idx, val_idx, test_idx = load_split_manifest(args.split_manifest, dataset)
     if not train_idx or not val_idx or not test_idx:
         raise ValueError("负控要求非空 train/val/test")
+
+    manifest = load_json(args.split_manifest)
+    group_by = manifest.get("group_by") or manifest.get("negative_control_group_by")
+    split_groups = {name: set() for name in ("train", "val", "test")}
+    for record in manifest.get("records", []):
+        split = record.get("split")
+        if split not in split_groups:
+            continue
+        group = record.get("group_value")
+        if group in (None, "") and group_by:
+            group = record.get(group_by)
+        if group in (None, ""):
+            raise ValueError("split manifest 缺少 group_value，无法验证分组隔离")
+        split_groups[split].add(str(group))
+    group_overlap = {
+        "train_val": sorted(split_groups["train"] & split_groups["val"]),
+        "train_test": sorted(split_groups["train"] & split_groups["test"]),
+        "val_test": sorted(split_groups["val"] & split_groups["test"]),
+    }
+    split_groups_disjoint = not any(group_overlap.values())
+    if not split_groups_disjoint:
+        raise ValueError(f"split manifest 存在分组泄漏: {group_overlap}")
+
+    audit_path = os.path.join(args.data_dir, "stage0_permutation_audit.json")
+    if not os.path.isfile(audit_path):
+        raise FileNotFoundError(f"负控置换审计不存在: {audit_path}")
+    permutation_audit = load_json(audit_path)
+    permutation_audit_valid = bool(
+        permutation_audit.get("permutation_unit") == "group"
+        and permutation_audit.get("train_group_donor_derangement")
+        and permutation_audit.get("validation_and_test_byte_identical")
+    )
+    if not permutation_audit_valid:
+        raise ValueError("负控置换审计未通过组级错排或 val/test 哈希检查")
     dataset.fit_normalizer(train_idx)
     train_loader = make_loader(dataset, train_idx, dataset.static_pos, dataset.dynamic_pos, True, cfg)
     train_eval_loader = make_loader(dataset, train_idx, dataset.static_pos, dataset.dynamic_pos, False, cfg)
@@ -80,8 +114,18 @@ def main():
     test_prior = prevalence_baseline(train_true, test_true)
     val_gap = val_metrics["macro_auprc"] - val_prior["macro_auprc"]
     test_gap = test_metrics["macro_auprc"] - test_prior["macro_auprc"]
+    val_per_label_gap = [
+        float(metric - prior)
+        for metric, prior in zip(val_metrics["per_label_auprc"], val_prior["per_label_auprc"])
+    ]
+    test_per_label_gap = [
+        float(metric - prior)
+        for metric, prior in zip(test_metrics["per_label_auprc"], test_prior["per_label_auprc"])
+    ]
     checks = {
         "finite_gradients": not bad_gradient,
+        "split_groups_disjoint": split_groups_disjoint,
+        "permutation_audit_valid": permutation_audit_valid,
         "validation_near_prior": val_gap <= args.max_auprc_over_prior,
         "test_near_prior": test_gap <= args.max_auprc_over_prior,
     }
@@ -92,9 +136,33 @@ def main():
             "data_dir": os.path.abspath(args.data_dir), "split_manifest": os.path.abspath(args.split_manifest),
             "model": args.model, "epochs": args.epochs, "seed": args.seed,
             "counts": {"train": len(train_idx), "val": len(val_idx), "test": len(test_idx)},
+            "group_by": group_by,
+            "group_counts": {key: len(value) for key, value in split_groups.items()},
+            "group_overlap": group_overlap,
+            "permutation_audit": {
+                "path": os.path.abspath(audit_path),
+                "permutation_unit": permutation_audit.get("permutation_unit"),
+                "train_group_count": permutation_audit.get("train_group_count"),
+                "group_material_label_exact_match_rate": permutation_audit.get(
+                    "group_material_label_exact_match_rate"
+                ),
+                "group_material_label_per_label_match_rate": permutation_audit.get(
+                    "group_material_label_per_label_match_rate"
+                ),
+                "group_material_label_per_label_correlation": permutation_audit.get(
+                    "group_material_label_per_label_correlation"
+                ),
+            },
+            "material_label_ids": list(CANDIDATE_IDS),
             "train": {"loss": train_loss, "metrics": train_metrics},
-            "validation": {"loss": val_loss, "metrics": val_metrics, "prior": val_prior, "macro_auprc_gap": val_gap},
-            "test": {"loss": test_loss, "metrics": test_metrics, "prior": test_prior, "macro_auprc_gap": test_gap},
+            "validation": {
+                "loss": val_loss, "metrics": val_metrics, "prior": val_prior,
+                "macro_auprc_gap": val_gap, "per_label_auprc_gap": val_per_label_gap,
+            },
+            "test": {
+                "loss": test_loss, "metrics": test_metrics, "prior": test_prior,
+                "macro_auprc_gap": test_gap, "per_label_auprc_gap": test_per_label_gap,
+            },
             "max_auprc_over_prior": args.max_auprc_over_prior, "checks": checks, "curve": curve,
         },
         notes=[
