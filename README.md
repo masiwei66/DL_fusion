@@ -63,6 +63,19 @@ DL_fusion/
 │   ├── _config.py               # 全局绘图配置（配色、中文字体、名称映射）
 │   ├── _utils.py                # 通用绘图辅助函数
 │   └── logs/                    # 生成的对比图与回归脚本
+├── scripts/                     # 数据工具与分阶段实验脚本
+│   ├── audit_dataset.py         # 数据冻结审计
+│   ├── make_splits.py           # ID 级严格划分清单
+│   └── stage0/                  # 阶段0：烟雾测试、过拟合诊断与负控
+│       ├── run_stage0.py        # 阶段0 统一执行入口
+│       ├── check_smoke_batch.py # 阶段0.1+0.4：batch 契约与防泄漏检查
+│       ├── make_smoke_dir.py    # 阶段0.2：小样本目录构建
+│       ├── overfit_tiny.py      # 阶段0.2：过拟合自动验收
+│       ├── shuffle_labels.py    # 阶段0.3：训练集监督置换（负控准备）
+│       ├── run_negative_control.py # 阶段0.3：负控训练与先验比较
+│       ├── stage0_common.py     # 阶段0 共享工具（输入白名单/监督边界）
+│       ├── stage0_train_utils.py # 阶段0 诊断训练工具
+│       └── README.md            # 阶段0 使用说明
 ├── DATASET_AUDIT.md             # 数据集结构与质量审计报告
 ├── RESEARCH_PLAN.md             # 研究路线与实验计划
 └── README.md
@@ -354,7 +367,7 @@ from plot import plot_history, save_prediction_figures, plot_evaluation, plot_pa
 |---|---|---|
 | 前置 | 数据冻结与审计（数据版本、样本清单、数据字典、标签分布、质量审计） | 全部样本可读，同一结构状态不跨集合 |
 | P0 | 实验基础设施（run 元数据、ID 级 split manifest、输出目录隔离、评估脚本） | 每次运行可追溯 |
-| 阶段 0 | 烟雾测试与负控（单 batch 检查、小样本过拟合、标签打乱负控） | 排除泄漏与链路错误 |
+| 阶段 0 | 烟雾测试与负控（batch 契约检查、小样本过拟合、训练集监督置换负控，统一入口 `scripts/stage0/run_stage0.py`） | 排除泄漏与链路错误 |
 | 阶段 1 | 严格基线（先验/传统/单模态/late fusion 基线矩阵，5 种子） | 主结果表可复现 |
 | 阶段 2 | 输入表示修正（逐温度显式编码、质量与 mask 进入 dataset） | 温度信息被显式利用 |
 | 阶段 3 | 推荐主模型 `quality_aware_regional_fusion` | 严格划分下增益稳定 |

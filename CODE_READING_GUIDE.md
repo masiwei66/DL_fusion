@@ -176,10 +176,16 @@ V2 数据集加载器，职责是"**一个 JSON → 一个样本的所有张量*
 | `logs/replot_history.py` | 从已有 checkpoint 重出训练曲线（不用重训） |
 | `logs/regenerate_plots.py` | 从 `method_comparison.json` 重出对比图 |
 
-### 4.9 `scripts/` — 数据审计与划分（实验准备）
+### 4.9 `scripts/` — 公共数据工具与分阶段实验
 
 - `audit_dataset.py`：扫描数据目录，输出样本清单（含 SHA-256）、唯一结构状态/激励/条件组数量、温度步分布、质量指标键、数组完整性键、标签分布 → `dataset_audit.json/.txt`。**数据冻结的第一步**。
 - `make_splits.py`：按 `--group-by`（默认 `structural_state_id`）做组级划分，贪婪算法把大组优先分配到目标比例，输出 ID 级 `split_manifest.json`（含每组样本哈希）。用 `--seed` 固定划分。
+- `stage0/check_smoke_batch.py`：阶段 0.1+0.4——batch 契约检查（必需字段/精确 shape/dtype/有限值/标签范围）+ forward/backward 检查 + 防泄漏审计（模型只接收 `MODEL_INPUT_KEYS` 白名单）。
+- `stage0/make_smoke_dir.py` + `stage0/overfit_tiny.py`：阶段 0.2——取 8–16 个样本建 tiny-set（全部用于训练），关闭增强/正则/辅助任务只优化材料 BCE，自动验收过拟合（loss 下降 ≥50%、宏 F1 ≥0.90、Exact Match ≥0.75）。
+- `stage0/shuffle_labels.py` + `stage0/run_negative_control.py`：阶段 0.3——按固定划分**仅置换 train 的监督束**（safety_labels + 缩放真值 + 支座真值整体置换），val/test 保留真实标签，训练后与 prevalence 先验比较（AUPRC gap ≤0.10）。
+- `stage0/run_stage0.py`：阶段 0 统一执行入口，一键跑完 0.1–0.4 并生成 `stage0_report.json`（任一失败则整体不通过）。
+- `stage0/stage0_common.py`：阶段 0 共享工具——输入白名单、监督边界、无固定点置换、HDF5 依赖物化。
+- `stage0/stage0_train_utils.py`：阶段 0 诊断训练工具（只优化材料 BCE、prevalence 基线、梯度有限性检查）。
 
 ## 5. 数据流全景（从文件到结果）
 

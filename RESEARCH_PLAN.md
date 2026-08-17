@@ -67,19 +67,31 @@
 
 ## 5. 阶段 0：烟雾测试与负控
 
-新数据生成完成后，不要直接跑完整模型，先用最小成本排除数据泄漏、标签错位和训练链路错误。
+新数据生成完成后，不要直接跑完整模型，先用最小成本排除数据泄漏、标签错位和训练链路错误。阶段 0 工具集中在 `scripts/stage0/`（共享口径见 `stage0_common.py`，统一执行见 `run_stage0.py`，使用说明见 `scripts/stage0/README.md`）。
 
-| 实验 | 做法 | 通过条件 |
-|---|---|---|
-| 0.1 单 batch 读数检查 | 一个 batch 内所有张量 shape/dtype/mask/标签/样本 ID 检查 | 静态、动态、温度、质量、标签都能进入 forward，无 NaN/Inf |
-| 0.2 小样本过拟合 | 取 8–16 个样本，训练 20–50 个 mini-epochs | 训练 loss 明显下降，训练集指标接近过拟合 |
-| 0.3 标签打乱负控 | 训练集标签随机打乱，输入不变 | 验证/测试性能接近随机或类别先验水平 |
-| 0.4 真值字段审计 | 确认 `material_scaling_factors`、`support_settlement` 等未进入模型输入 | dataset 输出只含观测量、坐标、温度、质量、mask 和监督标签 |
+前置条件：先用 `make_splits.py` 为完整数据生成固定 ID 级划分清单（train/val/test 均非空、结构状态不跨集合）。
+
+| 实验 | 工具 | 做法 | 通过条件（自动验收） |
+|---|---|---|---|
+| 0.1 单 batch 读数检查 | `check_smoke_batch.py` | 检查必需字段、精确 shape/dtype、有限值、标签范围、样本 ID，并执行 forward/backward | 全部检查通过、无 NaN/Inf、梯度有限 |
+| 0.2 小样本过拟合 | `make_smoke_dir.py` + `overfit_tiny.py` | 取 8–16 个样本（**全部用于训练**），关闭增强/EMA/标签平滑/正则/辅助任务，只优化材料 BCE，训练 20–50 epochs | loss 下降 ≥50%、训练集宏 F1 ≥0.90、Exact Match ≥0.75 |
+| 0.3 标签打乱负控 | `shuffle_labels.py` + `run_negative_control.py` | 按固定划分**仅置换 train 的监督束**（safety_labels + 缩放真值 + 支座真值整体置换），val/test 保留真实标签，输入响应断言不变；训练后与 prevalence 先验比较 | 梯度有限；val/test 宏 AUPRC 与先验差 ≤0.10；建议 3 个置换种子并报告 gap 均值与范围 |
+| 0.4 真值字段审计 | `check_smoke_batch.py`（白名单） | 模型 forward 只接收 `MODEL_INPUT_KEYS` 白名单观测量，全部监督字段在 forward 前剥离 | forward/backward 通过，无真值字段进入模型输入 |
+
+统一执行（推荐）：
+
+```powershell
+python scripts/stage0/run_stage0.py <数据目录> --split-manifest <划分清单> --work-dir <新工作目录> --model static_only --seeds 13,29,42
+```
+
+汇总报告 `stage0_report.json`；任一子实验未通过则 `passed: false` 且进程退出码非零。
+
+**纪律**：所有验收阈值必须在查看结果前固定，不得事后放宽阈值制造"通过"；阶段 0 的 checkpoint 与指标不得与正式主实验结果混用。
 
 快速起步命令（1 epoch 链路检查，数据生成完成后先跑这条）：
 
 ```powershell
-python DL_model/main.py --model static_only --epochs 1 --batch 2 --data-dir E:/working/DL_data/data_new
+python DL_model/main.py --model static_only --epochs 1 --batch 2 --data-dir <数据目录>
 ```
 
 ## 6. 阶段 1：严格基线
