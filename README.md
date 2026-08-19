@@ -66,16 +66,23 @@ DL_fusion/
 ├── scripts/                     # 数据工具与分阶段实验脚本
 │   ├── audit_dataset.py         # 数据冻结审计
 │   ├── make_splits.py           # ID 级严格划分清单
-│   └── stage0/                  # 阶段0：烟雾测试、过拟合诊断与负控
-│       ├── run_stage0.py        # 阶段0 统一执行入口
-│       ├── check_smoke_batch.py # 阶段0.1+0.4：batch 契约与防泄漏检查
-│       ├── make_smoke_dir.py    # 阶段0.2：小样本目录构建
-│       ├── overfit_tiny.py      # 阶段0.2：过拟合自动验收
-│       ├── shuffle_labels.py    # 阶段0.3：训练集监督置换（负控准备）
-│       ├── run_negative_control.py # 阶段0.3：负控训练与先验比较
-│       ├── stage0_common.py     # 阶段0 共享工具（输入白名单/监督边界）
-│       ├── stage0_train_utils.py # 阶段0 诊断训练工具
-│       └── README.md            # 阶段0 使用说明
+│   ├── stage0/                  # 阶段0：烟雾测试、过拟合诊断与负控
+│   │   ├── run_stage0.py        # 阶段0 统一执行入口
+│   │   ├── check_smoke_batch.py # 阶段0.1+0.4：batch 契约与防泄漏检查
+│   │   ├── make_smoke_dir.py    # 阶段0.2：小样本目录构建
+│   │   ├── overfit_tiny.py      # 阶段0.2：过拟合自动验收
+│   │   ├── shuffle_labels.py    # 阶段0.3：训练集监督置换（负控准备）
+│   │   ├── run_negative_control.py # 阶段0.3：负控训练与先验比较
+│   │   ├── stage0_common.py     # 阶段0 共享工具（输入白名单/监督边界）
+│   │   ├── stage0_train_utils.py # 阶段0 诊断训练工具
+│   │   └── README.md            # 阶段0 使用说明
+│   └── stage1/                  # 阶段1：严格基线与五种子汇总
+│       ├── run_stage1.py        # 阶段1 统一执行入口
+│       ├── prior_baseline.py    # prevalence/dummy 基线
+│       ├── traditional_baseline.py # 静态/动态特征传统基线
+│       ├── aggregate_results.py # 跨种子结果汇总
+│       ├── stage1_common.py     # split 校验、AUPRC 与汇总工具
+│       └── README.md            # 阶段1执行步骤与输出协议
 ├── DATASET_AUDIT.md             # 数据集结构与质量审计报告
 ├── RESEARCH_PLAN.md             # 研究路线与实验计划
 └── README.md
@@ -383,6 +390,7 @@ from plot import plot_history, save_prediction_figures, plot_evaluation, plot_pa
 ## 相关文档
 
 - [RESEARCH_PLAN.md](RESEARCH_PLAN.md) — 研究计划：数据冻结、实验基础设施、阶段 0–6、指标体系、执行顺序与代码修改清单。
+- [scripts/stage1/README.md](scripts/stage1/README.md) — 阶段 1 严格基线执行命令、输出结构与判读规则。
 - 《深度学习实验后续工作主线》— 详细执行骨架（位于 `E:\working\my_project\具体工作\深度学习相关\深度学习实验后续工作主线.md`，Word 版：`深度学习实验后续工作安排.docx`）。
 - [DATASET_AUDIT.md](DATASET_AUDIT.md) — `data_new` 数据集结构、字段说明与质量审计结论。
 - [DL_model/README.md](DL_model/README.md) — 模型细节：架构、损失、训练策略与全部配置项。

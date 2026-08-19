@@ -20,6 +20,7 @@ env/
 # Project artifacts
 checkpoints/
 logs/
+stage1_smoke_local/
 !plot/logs/
 !plot/logs/*.py
 outputs/
