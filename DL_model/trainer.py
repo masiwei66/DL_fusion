@@ -393,9 +393,9 @@ def train_epoch(model, loader, optimizer, criterion_cls, criterion_reg, config, 
         _move_batch(batch, config.device)
 
         # 数据增强，：增强只发生在训练循环里——validate（评估）不会调用它，所以测试时数据是干净的。
-        if getattr(config, "model_type", "") in ("dynamic_only", "fusion"):
+        if getattr(config, "model_type", "") in ("dynamic_only", "fusion", "concat_fusion"):
             batch["ace"] = augment_dynamic_response(batch["ace"], config)
-        if getattr(config, "model_type", "") in ("static_only", "fusion"):
+        if getattr(config, "model_type", "") in ("static_only", "fusion", "concat_fusion"):
             batch["disp"], batch["strain"] = augment_static_response(
                 batch["disp"], batch["strain"], config
             )
@@ -525,6 +525,8 @@ def build_prediction_rows(
     global_true=None,
     global_pred=None,
     region_names=None,
+    static_prob=None,
+    dynamic_prob=None,
 ):
     rows = []
     region_names = region_names or []
@@ -533,6 +535,10 @@ def build_prediction_rows(
         row["material_true"] = _label_dict(CANDIDATE_IDS, mat_true[i], int)
         row["material_pred"] = _label_dict(CANDIDATE_IDS, mat_pred[i], int)
         row["material_prob"] = _label_dict(CANDIDATE_IDS, mat_prob[i], float)
+        if static_prob is not None:
+            row["material_static_prob"] = _label_dict(CANDIDATE_IDS, static_prob[i], float)
+        if dynamic_prob is not None:
+            row["material_dynamic_prob"] = _label_dict(CANDIDATE_IDS, dynamic_prob[i], float)
         if support_true is not None:
             row["support_true"] = _label_dict(SUPPORT_NODES, support_true[i], int)
             row["support_pred"] = _label_dict(SUPPORT_NODES, support_pred[i], int)
@@ -584,6 +590,7 @@ def validate(
     is_pretrain = getattr(model, "stage", None) == "pretrain"
 
     all_mat_true, all_mat_prob = [], []
+    all_static_prob, all_dynamic_prob = [], []
     all_support_true, all_support_prob = [], []
     all_region_true, all_region_pred = [], []
     all_global_true, all_global_pred = [], []
@@ -608,6 +615,10 @@ def validate(
             target_smooth = _smooth_target(target, 0.0)
             loss = multitask_loss(output, batch, criterion_cls, criterion_reg, config, target_smooth)
             mat_prob = torch.sigmoid(logits)
+            aux = getattr(model, "last_aux", None)
+            if aux is not None and "static_logits" in aux and "dynamic_logits" in aux:
+                all_static_prob.append(torch.sigmoid(aux["static_logits"]).detach().cpu())
+                all_dynamic_prob.append(torch.sigmoid(aux["dynamic_logits"]).detach().cpu())
 
             all_support_true.append(batch["support_target"].cpu())
             all_support_prob.append(torch.sigmoid(output["support_logits"]).cpu())
@@ -619,7 +630,6 @@ def validate(
             all_support_disp_pred.append(
                 (torch.sigmoid(output["support_reg"]) * float(config.support_disp_scale_mm)).cpu()
             )
-            aux = getattr(model, "last_aux", None)
             if aux is not None and "fusion_alpha" in aux:
                 fusion_alpha = aux["fusion_alpha"].detach().cpu()
             if aux is not None and "gate" in aux:
@@ -723,5 +733,7 @@ def validate(
         global_true=global_true,
         global_pred=global_pred,
         region_names=getattr(config, "region_names", None),
+        static_prob=(torch.cat(all_static_prob).numpy() if all_static_prob else None),
+        dynamic_prob=(torch.cat(all_dynamic_prob).numpy() if all_dynamic_prob else None),
     )
     return avg_loss, metrics, results, rows

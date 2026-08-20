@@ -219,6 +219,7 @@ class Config:
     def method_dir(root, model_type):
         names = {
             "fusion": "fusion",
+            "concat_fusion": "concat_fusion",
             "static_only": "static_only",
             "dynamic_only": "dynamic_only",
         }

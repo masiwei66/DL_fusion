@@ -528,6 +528,32 @@ def warm_start_fusion_branches(model, cfg, device):
     return loaded_branches == {"static", "dynamic"}
 
 
+def warm_start_concat_branches(model, cfg, device):
+    """用同一 seed 的单模态 checkpoint 初始化 concat 编码器。"""
+    if cfg.model_type != "concat_fusion":
+        return False
+    loaded = set()
+    for name, branch, method, filename in (
+        ("static", model.static_branch, "static_only", "static_only_best.pt"),
+        ("dynamic", model.dynamic_branch, "dynamic_only", "dynamic_only_best.pt"),
+    ):
+        path = os.path.join(Config.method_dir(cfg.save_root, method), filename)
+        if not os.path.isfile(path):
+            print(f"  -> skip concat warm start {name}: checkpoint not found: {path}")
+            continue
+        checkpoint = torch.load(path, map_location=device)
+        prefix = f"{name}_branch."
+        state = {
+            key.removeprefix(prefix): value
+            for key, value in checkpoint["model"].items()
+            if key.startswith(prefix)
+        }
+        branch.load_state_dict(state)
+        loaded.add(name)
+        print(f"  -> warm start concat {name}_branch from {path}")
+    return loaded == {"static", "dynamic"}
+
+
 def set_fusion_alpha_only_trainable(model):
     """冻结融合模型，仅保留类别级 alpha logits 可训练。"""
     for param in model.parameters():
@@ -700,23 +726,29 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
         if "eval_thresholds" in ckpt:
             cfg.eval_thresholds = np.asarray(ckpt["eval_thresholds"], dtype=np.float32)
         print(f"Loaded checkpoint: {ckpt_path} (epoch {ckpt['epoch']})")
+        eval_name = getattr(args, "eval_split", "test")
+        eval_loader = {
+            "val": val_loader,
+            "test": test_loader,
+        }[eval_name]
         test_loss, test_metrics, test_results, test_rows = validate(
             model,
-            test_loader,
+            eval_loader,
             criterion_cls,
             criterion_reg,
             cfg,
-            desc=f"Test {model_type}",
+            desc=f"{eval_name.title()} {model_type}",
             return_predictions=True,
         )
         print_metrics(test_metrics)
         plot_evaluation(*test_results, os.path.join(cfg.log_dir, f"{cfg.run_name}_evaluation.png"))
         save_sample_predictions(
-            os.path.join(cfg.log_dir, f"{cfg.run_name}_test_predictions.json"),
+            os.path.join(cfg.log_dir, f"{cfg.run_name}_{eval_name}_predictions.json"),
             test_rows,
             metadata={
                 "model_type": model_type,
                 "mode": "test",
+                "split": eval_name,
                 "checkpoint": ckpt_path,
             },
         )
@@ -837,6 +869,8 @@ def train_one_model(model_type, base_cfg, dataset, train_idx, val_idx, test_idx,
             fusion_warm_started = warm_start_fusion_branches(model, cfg, device)
             if fusion_warm_started and getattr(cfg, "fusion_train_alpha_only", False):
                 set_fusion_alpha_only_trainable(model)
+        elif model_type == "concat_fusion":
+            warm_start_concat_branches(model, cfg, device)
         effective_min_epochs = getattr(cfg, f"{model_type}_min_epochs", getattr(cfg, "min_epochs", 0))
         use_ema = cfg.ema_decay > 0 and not (
             model_type == "fusion"
@@ -952,9 +986,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", default="train", choices=["train", "test", "infer"])
     parser.add_argument(
+        "--eval-split", default="test", choices=["val", "test"],
+        help="评估模式下导出哪个划分的预测；训练模式始终导出 test，并可另行导出 val。",
+    )
+    parser.add_argument(
         "--model",
         default="all",
-        choices=["fusion", "static_only", "dynamic_only", "all"],
+        choices=["fusion", "concat_fusion", "static_only", "dynamic_only", "all"],
         help="要训练/测试的模型类型。all 依次运行 static_only、dynamic_only、fusion。",
     )
     parser.add_argument("--input", default=None, help="用于推理的 JSON 文件")

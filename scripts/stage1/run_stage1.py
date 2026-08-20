@@ -82,6 +82,11 @@ def main():
     parser.add_argument("--skip-prior", action="store_true", help="跳过先验基线")
     parser.add_argument("--skip-traditional", action="store_true", help="跳过传统特征基线")
     parser.add_argument("--skip-deep", action="store_true", help="跳过深度基线")
+    parser.add_argument(
+        "--include-concat",
+        action="store_true",
+        help="在每个 seed 的 static/dynamic/fusion 完成后，额外训练 feature-concat 基线",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只校验并生成执行计划，不真正运行")
     args = parser.parse_args()
 
@@ -106,6 +111,7 @@ def main():
         "seeds": seeds,
         "data_version": args.data_version,
         "deep_models": ["static_only", "dynamic_only", "fusion"],
+        "include_concat": args.include_concat,
         "traditional_estimator": args.estimator,
         "deep_epochs": args.deep_epochs,
         "batch": args.batch,
@@ -169,6 +175,32 @@ def main():
                     expected_path=os.path.join(seed_dir, "logs", "static_only", "static_only_test_predictions.json"),
                 ),
             })
+            if args.include_concat:
+                concat_command = [
+                    _python(), os.path.join(REPO_ROOT, "DL_model", "main.py"),
+                    "--model", "concat_fusion", "--seed", str(seed),
+                    "--data-dir", args.data_dir, "--split-manifest", args.split_manifest,
+                    "--data-version", args.data_version, "--run-id", f"stage1_seed_{seed}",
+                    "--output-dir", seed_dir,
+                ]
+                if args.deep_epochs is not None:
+                    concat_command.extend(["--epochs", str(args.deep_epochs)])
+                if args.batch is not None:
+                    concat_command.extend(["--batch", str(args.batch)])
+                if args.lr is not None:
+                    concat_command.extend(["--lr", str(args.lr)])
+                jobs.append({
+                    "name": f"deep_concat_fusion_seed_{seed}",
+                    "result": _run(
+                        concat_command,
+                        REPO_ROOT,
+                        os.path.join(seed_dir, "concat_fusion_run.log"),
+                        args.dry_run,
+                        expected_path=os.path.join(
+                            seed_dir, "logs", "concat_fusion", "concat_fusion_test_predictions.json"
+                        ),
+                    ),
+                })
 
     report = {
         "experiment": "stage1",

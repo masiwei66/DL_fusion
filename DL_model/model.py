@@ -596,12 +596,51 @@ class DualBranchFusion(nn.Module):
         return output
 
 
+class ConcatFusionModel(nn.Module):
+    """静态/动态编码器特征直接拼接的简单早期融合基线。"""
+
+    def __init__(self, config):
+        super().__init__()
+        branch_dim = config.fusion_dim // 2
+        self.static_branch = StaticBranch(
+            pos_dim=config.pos_dim,
+            hidden_dim=config.static_dim,
+            out_dim=branch_dim,
+            n_steps=getattr(config, "static_steps", 4),
+            n_channels=getattr(config, "static_channels", 3),
+        )
+        self.dynamic_branch = DynamicBranch(
+            pos_dim=config.pos_dim,
+            hidden_dim=config.dynamic_dim,
+            out_dim=branch_dim,
+            n_nodes=getattr(config, "n_dynamic_nodes", 5),
+            n_channels=getattr(config, "dynamic_channels", 3),
+        )
+        self.temperature_condition_scale = getattr(config, "temperature_condition_scale", 0.1)
+        self.head = MultiTaskPredictionHead(branch_dim * 2, config)
+
+    def forward(self, batch, return_emb=False):
+        static_feat = self.static_branch(batch["disp"], batch["strain"], batch["static_pos"])
+        dynamic_feat = self.dynamic_branch(batch["ace"], batch["dynamic_pos"])
+        static_feat = _apply_temperature_condition(static_feat, batch, self.temperature_condition_scale)
+        dynamic_feat = _apply_temperature_condition(dynamic_feat, batch, self.temperature_condition_scale)
+        fused = torch.cat([static_feat, dynamic_feat], dim=1)
+        output = self.head(fused)
+        output["material_emb"] = fused
+        output["safety_emb"] = fused
+        if return_emb:
+            return output, fused
+        return output
+
+
 def build_model(config):
     """根据 config.model_type 构建模型。"""
 
     model_type = getattr(config, 'model_type', 'fusion')
     if model_type == 'fusion':
         return DualBranchFusion(config)
+    if model_type == 'concat_fusion':
+        return ConcatFusionModel(config)
     if model_type == 'static_only':
         return StaticOnlyModel(config)
     if model_type == 'dynamic_only':

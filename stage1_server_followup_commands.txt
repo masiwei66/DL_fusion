@@ -1,0 +1,295 @@
+阶段 1 后续实验服务器操作命令
+================================
+
+说明
+----
+本文件中的命令用于服务器环境。
+服务器代码目录：E:\personal_files\Dongyaxun\DL_fusion
+服务器数据目录：E:\personal_files\Dongyaxun\DL_data\data_MULTI_EXCITATION
+阶段 1 正式报告：E:\personal_files\Dongyaxun\DL_data\report\stage1_2
+
+命令默认使用 PowerShell 执行。
+请先确认服务器上的 Python 虚拟环境路径确实为：
+E:\personal_files\Dongyaxun\DL_fusion\.venv\Scripts\python.exe
+
+
+步骤 0：设置路径并检查环境
+----------------------------
+
+作用：
+设置后续命令使用的统一路径，并检查 Python、数据目录、划分清单和正式报告目录是否存在。
+
+命令：
+
+$Python = 'E:\personal_files\Dongyaxun\DL_fusion\.venv\Scripts\python.exe'
+$CodeDir = 'E:\personal_files\Dongyaxun\DL_fusion'
+$DataDir = 'E:\personal_files\Dongyaxun\DL_data\data_MULTI_EXCITATION'
+$Manifest = Join-Path $DataDir 'split_stage0.json'
+$FormalReport = 'E:\personal_files\Dongyaxun\DL_data\report\stage1_2'
+$Followup = Join-Path $CodeDir 'stage1_followup'
+
+Test-Path $Python
+Test-Path $CodeDir
+Test-Path $DataDir
+Test-Path $Manifest
+Test-Path $FormalReport
+
+New-Item -ItemType Directory -Force -Path $Followup | Out-Null
+
+预期：
+上述 Test-Path 命令均返回 True。
+
+
+步骤 1：审计正式数据集
+----------------------
+
+作用：
+检查正式数据集的样本数量、结构状态数量、场景分布、激励分布、温度步、标签和文件哈希。
+审计结果不会修改原始数据，输出写入代码目录下的 follow-up 目录。
+
+命令：
+
+New-Item -ItemType Directory -Force `
+  -Path (Join-Path $Followup 'data_audit') | Out-Null
+
+& $Python (Join-Path $CodeDir 'scripts\audit_dataset.py') `
+  $DataDir `
+  --output-dir (Join-Path $Followup 'data_audit')
+
+主要输出：
+
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\data_audit\dataset_audit.json
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\data_audit\dataset_audit.txt
+
+重点检查字段：
+
+- sample_count
+- unique_structural_state_ids
+- unique_excitation_ids
+- scenario_distribution
+- excitation_distribution
+- file_manifest_sha256
+- label_distribution
+
+
+步骤 2：导出验证集预测
+----------------------
+
+作用：
+使用已有的最佳 checkpoint，在验证集上重新导出预测结果。
+验证集预测只用于确定后处理基线的阈值，不能使用测试集调阈值。
+
+说明：
+验证集预测输出到本地代码目录下的 stage1_followup，不覆盖正式报告。
+正式测试集预测仍从 FormalReport 目录读取。
+
+命令：
+
+$ValDir = Join-Path $Followup 'val_exports'
+New-Item -ItemType Directory -Force -Path $ValDir | Out-Null
+
+foreach ($seed in 13,29,42,71,101) {
+    $SeedDir = Join-Path $ValDir "seed_$seed"
+
+    foreach ($model in 'static_only','dynamic_only','fusion') {
+        $Checkpoint = Join-Path `
+            $FormalReport `
+            "deep\seed_$seed\checkpoints\$model\${model}_best.pt"
+
+        & $Python (Join-Path $CodeDir 'DL_model\main.py') `
+            --mode test `
+            --model $model `
+            --eval-split val `
+            --seed $seed `
+            --data-dir $DataDir `
+            --split-manifest $Manifest `
+            --data-version v2_stage1_N3500 `
+            --output-dir $SeedDir `
+            --resume $Checkpoint
+    }
+}
+
+预期输出示例：
+
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\val_exports\seed_42\logs\static_only\static_only_val_predictions.json
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\val_exports\seed_42\logs\dynamic_only\dynamic_only_val_predictions.json
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\val_exports\seed_42\logs\fusion\fusion_val_predictions.json
+
+每个 seed 都应生成 static_only、dynamic_only 和 fusion 三组验证集预测文件。
+
+
+步骤 3：运行固定分数融合和任务路由基线
+----------------------------------------
+
+作用：
+使用验证集预测确定阈值，再在正式测试集上计算两类低复杂度基线：
+
+1. fixed score fusion：static 和 dynamic 概率按 0.5 / 0.5 平均；
+2. task routed model：材料任务使用 dynamic-only，支座/区域/全桥任务使用 fusion。
+
+命令：
+
+& $Python (Join-Path $CodeDir 'scripts\stage1\posthoc_baselines.py') `
+  $ValDir `
+  --test-stage1-dir $FormalReport `
+  --output (Join-Path $Followup 'posthoc_baselines.json')
+
+主要输出：
+
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\posthoc_baselines.json
+
+重点查看：
+
+- deep_dynamic_only 与 fixed score fusion 的材料 Macro-AUPRC、Macro-F1；
+- task routed model 的材料 Macro-F1；
+- task routed model 的 support_macro_f1；
+- task routed model 的 support_disp_mae_mm；
+- 各方法的 seed 均值和标准差。
+
+
+步骤 4：结构状态级 paired bootstrap
+------------------------------------
+
+作用：
+以 structural_state_id 为重采样单位，评估两个模型之间的性能差异置信区间。
+不能把同一结构状态下的多个激励样本当成相互独立的样本。
+
+示例：比较 seed 42 的 dynamic-only 和 fusion。
+
+命令：
+
+& $Python (Join-Path $CodeDir 'scripts\stage1\state_bootstrap.py') `
+  (Join-Path $FormalReport 'deep\seed_42\logs\dynamic_only\dynamic_only_test_predictions.json') `
+  (Join-Path $FormalReport 'deep\seed_42\logs\fusion\fusion_test_predictions.json') `
+  --iterations 2000 `
+  --seed 20260819 `
+  --output (Join-Path $Followup 'bootstrap_seed42_dynamic_vs_fusion.json')
+
+主要输出：
+
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\bootstrap_seed42_dynamic_vs_fusion.json
+
+建议至少执行以下比较：
+
+- dynamic-only vs fusion；
+- dynamic-only vs fixed score fusion；
+- dynamic-only vs task routed model。
+
+判读重点：
+
+- higher_is_better_delta；
+- ci95_higher_is_better_delta；
+- probability_right_better。
+
+如果 95% 置信区间跨过 0，不能声称两个方法存在稳定差异。
+
+
+步骤 5：补充 feature-concat 基线
+---------------------------------
+
+作用：
+训练一个简单的 feature-concat 融合模型，作为当前 learned late fusion 的低复杂度对照。
+该模型将 static 和 dynamic 编码器特征直接拼接，再连接统一多任务预测头。
+
+注意：
+该步骤会重新运行正式阶段 1 的先验、传统和深度实验，计算量较大。
+如果服务器已有对应 checkpoint，可只单独运行 concat_fusion，见步骤 5B。
+
+步骤 5A：完整运行并加入 concat 基线
+
+$ConcatReport = Join-Path $Followup 'stage1_with_concat'
+
+& $Python (Join-Path $CodeDir 'scripts\stage1\run_stage1.py') `
+  $DataDir `
+  --split-manifest $Manifest `
+  --output-dir $ConcatReport `
+  --data-version v2_stage1_N3500 `
+  --include-concat
+
+步骤 5B：只运行 concat_fusion
+
+前提：
+正式报告中每个 seed 都存在 static_only 和 dynamic_only checkpoint。
+
+命令：
+
+foreach ($seed in 13,29,42,71,101) {
+    $SeedDir = Join-Path $FormalReport "deep\seed_$seed"
+
+    & $Python (Join-Path $CodeDir 'DL_model\main.py') `
+        --model concat_fusion `
+        --seed $seed `
+        --data-dir $DataDir `
+        --split-manifest $Manifest `
+        --data-version v2_stage1_N3500 `
+        --output-dir $SeedDir
+}
+
+步骤 5C：汇总 concat 结果
+
+& $Python (Join-Path $CodeDir 'scripts\stage1\aggregate_results.py') `
+  $ConcatReport
+
+concat 结果预期位于：
+
+E:\personal_files\Dongyaxun\DL_fusion\stage1_followup\stage1_with_concat
+
+
+步骤 6：最终检查
+----------------
+
+作用：
+确认代码修改没有语法错误，确认新增命令入口可用。
+
+命令：
+
+& $Python -m py_compile `
+  (Join-Path $CodeDir 'DL_model\main.py') `
+  (Join-Path $CodeDir 'DL_model\model.py') `
+  (Join-Path $CodeDir 'DL_model\trainer.py') `
+  (Join-Path $CodeDir 'scripts\audit_dataset.py') `
+  (Join-Path $CodeDir 'scripts\stage1\stage1_common.py') `
+  (Join-Path $CodeDir 'scripts\stage1\posthoc_baselines.py') `
+  (Join-Path $CodeDir 'scripts\stage1\state_bootstrap.py') `
+  (Join-Path $CodeDir 'scripts\stage1\run_stage1.py') `
+  (Join-Path $CodeDir 'scripts\stage1\aggregate_results.py')
+
+& $Python (Join-Path $CodeDir 'scripts\stage1\posthoc_baselines.py') --help
+& $Python (Join-Path $CodeDir 'scripts\stage1\state_bootstrap.py') --help
+& $Python (Join-Path $CodeDir 'DL_model\main.py') --help
+
+
+文件和目录说明
+--------------
+
+$FormalReport：
+正式阶段 1 测试集 checkpoint、日志和测试预测。原则上只读，不覆盖。
+
+$Followup：
+后续验证、审计、bootstrap 和后处理结果的输出目录。
+
+$Followup\data_audit：
+正式数据审计结果。
+
+$Followup\val_exports：
+由正式 checkpoint 导出的验证集预测。
+
+$Followup\posthoc_baselines.json：
+固定分数融合和任务路由基线结果。
+
+$Followup\bootstrap_*.json：
+结构状态级 paired bootstrap 结果。
+
+$Followup\stage1_with_concat：
+包含 feature-concat 基线的独立实验结果。
+
+
+当前限制
+--------
+
+1. 服务器必须存在正式数据目录和 split_stage0.json。
+2. 验证集导出使用正式报告中的 checkpoint，因此 checkpoint 必须与数据版本和 split manifest 匹配。
+3. 不要使用测试集重新调阈值。
+4. 不要覆盖 E:\personal_files\Dongyaxun\DL_data\report\stage1_2 中已有的正式报告。
+5. 如果服务器虚拟环境路径不同，应先查找实际 python.exe，再修改 $Python 变量。
+

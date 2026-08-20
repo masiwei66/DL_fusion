@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from collections import Counter, defaultdict
+from datetime import datetime
 
 
 def file_sha256(path):
@@ -38,6 +39,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     summary = {
+        "audit_created_at": datetime.now().isoformat(timespec="seconds"),
+        "data_version": os.path.basename(os.path.abspath(args.data_dir)),
         "data_dir": os.path.abspath(args.data_dir),
         "sample_count": len(samples),
         "sample_ids": [],
@@ -110,6 +113,17 @@ def main():
     summary["unique_structural_state_ids"] = len(set(summary["structural_state_ids"]))
     summary["unique_excitation_ids"] = len(set(summary["excitation_ids"]))
     summary["unique_condition_groups"] = len(set(summary["condition_groups"]))
+    summary["scenario_distribution"] = dict(
+        Counter(
+            (sample.get("structural_state", {}) or {}).get("scenario", "unknown")
+            for _path, sample in samples
+        )
+    )
+    summary["excitation_distribution"] = dict(Counter(summary["excitation_ids"]))
+    summary["structural_state_distribution"] = dict(Counter(summary["structural_state_ids"]))
+    summary["file_manifest_sha256"] = hashlib.sha256(
+        "\n".join(f"{record['filename']}:{record['sha256']}" for record in summary["samples"]).encode("utf-8")
+    ).hexdigest()
 
     summary_path = os.path.join(output_dir, "dataset_audit.json")
     with open(summary_path, "w", encoding="utf-8") as file:
@@ -122,6 +136,10 @@ def main():
         file.write(f"unique_structural_state_ids: {summary['unique_structural_state_ids']}\n")
         file.write(f"unique_excitation_ids: {summary['unique_excitation_ids']}\n")
         file.write(f"unique_condition_groups: {summary['unique_condition_groups']}\n")
+        file.write(f"data_version: {summary['data_version']}\n")
+        file.write(f"file_manifest_sha256: {summary['file_manifest_sha256']}\n")
+        file.write(f"scenario_distribution: {summary['scenario_distribution']}\n")
+        file.write(f"excitation_distribution: {summary['excitation_distribution']}\n")
         file.write(f"temperature_step_counts: {dict(summary['temperature_steps'])}\n")
         file.write(f"quality_metric_keys: {dict(summary['quality_metric_keys'])}\n")
         file.write(f"array_integrity_keys: {dict(summary['array_integrity_keys'])}\n")

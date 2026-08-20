@@ -222,16 +222,14 @@ def aggregate_seed_metrics(rows: Iterable[dict]) -> dict:
     return {"seed_count": len(rows), "metrics": summary}
 
 
-def prediction_records_metrics(prediction_path: str) -> dict:
-    """从模型预测文件（trainer 导出的 records）解析并计算各任务指标。
+def prediction_records_metrics_from_records(records: list[dict]) -> dict:
+    """从 trainer 导出的预测 records 计算各任务指标。
 
-    预测文件里的标签是真值/预测/概率字典（键为材料 id 的字符串），这里统一
-    转成数组后复用 multilabel_metrics，并额外计算支座沉降 MAE、区域/全桥指标。
+    预测记录包含材料、支座、区域和全桥任务的真值与预测值；该函数只依赖
+    records 本身，便于结构状态级 bootstrap 在内存中重复计算。
     """
-    payload = load_json(prediction_path)
-    records = payload.get("records", [])
     if not records:
-        raise ValueError(f"prediction file has no records: {prediction_path}")
+        raise ValueError("prediction records are empty")
     label_ids = list(records[0]["material_true"].keys())
     y_true = np.asarray(
         [[record["material_true"][label] for label in label_ids] for record in records],
@@ -294,6 +292,16 @@ def prediction_records_metrics(prediction_path: str) -> dict:
         )
         result["global_mae"] = float(np.abs(global_true - global_pred).mean())
     result["label_ids"] = [int(label) if str(label).isdigit() else str(label) for label in label_ids]
+    return result
+
+
+def prediction_records_metrics(prediction_path: str) -> dict:
+    """从模型预测文件解析并计算各任务指标。"""
+    payload = load_json(prediction_path)
+    records = payload.get("records", [])
+    if not records:
+        raise ValueError(f"prediction file has no records: {prediction_path}")
+    result = prediction_records_metrics_from_records(records)
     result["prediction_path"] = os.path.abspath(prediction_path)
     return result
 

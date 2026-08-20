@@ -59,7 +59,7 @@ def aggregate(output_dir):
 
     for seed_dir in glob.glob(os.path.join(output_dir, "deep", "seed_*")):
         seed_name = os.path.basename(seed_dir).removeprefix("seed_")
-        for model_type in ("static_only", "dynamic_only", "fusion"):
+        for model_type in ("static_only", "dynamic_only", "fusion", "concat_fusion"):
             prediction_path = find_prediction_file(seed_dir, model_type)
             if prediction_path:
                 _add_result(
