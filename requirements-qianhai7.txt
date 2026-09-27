@@ -1,0 +1,5 @@
+numpy>=1.26
+h5py>=3.10
+PyYAML>=6.0
+torch>=2.2
+xgboost>=2.0

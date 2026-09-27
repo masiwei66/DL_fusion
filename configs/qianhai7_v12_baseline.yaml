@@ -1,0 +1,46 @@
+data:
+  data_root: E:/working/DL_data/qianhai_test
+  window_length: 6
+  stride: 1
+  virtual_point_count_min: 50
+  virtual_point_count_max: 100
+  noise_std_mm: 0.2
+  missing_probability: 0.05
+  split_seed: 20260924
+train:
+  batch_size: 32
+  epochs: 1
+  learning_rate: 0.001
+  # CPU data-loading workers. Start with 4, then compare rate and memory.
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: false
+model:
+  # Change this name to switch the experiment after the corresponding model is implemented.
+  # choices: mlp, xgboost, resnet1d, lstm, gru, transformer, gnn_lstm
+
+  name: xgboost
+  params:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+
+# Examples:
+# model:
+#   name: xgboost
+#   params:
+#     n_estimators: 300
+#     max_depth: 6
+#     learning_rate: 0.05
+# model:
+#   name: resnet1d
+#   params:
+#     base_width: 32
+#     num_classes: 40
+# model:
+#   name: lstm
+#   params:
+#     hidden_size: 128
+#     num_layers: 2
+#     dropout: 0.1
