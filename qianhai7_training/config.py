@@ -8,6 +8,7 @@ from typing import Any
 SUPPORTED_MODEL_NAMES = (
     "xgboost",
     "resnet1d",
+    "resnet50_1d",
     "lstm",
     "gru",
     "transformer",

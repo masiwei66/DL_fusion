@@ -37,7 +37,13 @@ class HDF5StateSource:
                 "temperature_C": np.asarray(handle["environment/temperature_by_acquisition_C"], dtype=np.float32),
                 "delta_days": np.asarray(handle["environment/delta_days"], dtype=np.float32),
                 "state_family_code": np.asarray(handle["labels/state_family_code_by_acquisition"], dtype=np.int64),
+                "state_family_vocabulary": np.asarray(handle["labels/state_family_vocabulary"], dtype=str) if "labels/state_family_vocabulary" in handle else np.asarray([], dtype=str),
                 "global_severity": np.asarray(handle["labels/global_severity_level_by_acquisition"], dtype=np.int64),
+                "material_active_by_acquisition": np.asarray(handle["labels/material_active_by_acquisition"], dtype=bool) if "labels/material_active_by_acquisition" in handle else np.asarray([], dtype=bool),
+                "support_active_by_acquisition": np.asarray(handle["labels/support_active_by_acquisition"], dtype=bool) if "labels/support_active_by_acquisition" in handle else np.asarray([], dtype=bool),
+                "support_active_by_acquisition_by_group": np.asarray(handle["labels/support_active_by_acquisition_by_group"], dtype=bool) if "labels/support_active_by_acquisition_by_group" in handle else np.asarray([], dtype=bool),
+                "support_stiffness_active_by_acquisition": np.asarray(handle["labels/support_stiffness_active_by_acquisition"], dtype=bool) if "labels/support_stiffness_active_by_acquisition" in handle else np.asarray([], dtype=bool),
+                "local_deck_active_by_acquisition": np.asarray(handle["labels/local_deck_active_by_acquisition"], dtype=bool) if "labels/local_deck_active_by_acquisition" in handle else np.asarray([], dtype=bool),
                 "modal_frequencies": np.asarray(handle["responses/fem/modal_frequencies"], dtype=np.float32)
                 if "responses/fem/modal_frequencies" in handle else np.zeros(0, dtype=np.float32),
                 "support_settlement_mm": np.asarray(handle["state/support_settlement_by_acquisition_mm"], dtype=np.float32)

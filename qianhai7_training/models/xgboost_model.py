@@ -57,11 +57,17 @@ class XGBoostModel:
     random_state: int = 42
     state_model: Any = None
     severity_model: Any = None
+    material_model: Any = None
+    settlement_model: Any = None
+    stiffness_model: Any = None
     # XGBoost's sklearn wrapper requires labels in [0, n_classes).  The
     # dataset labels remain global vocabulary IDs; these arrays record the
     # local-to-global mapping used for each fitted classifier.
     state_classes_: np.ndarray | None = None
     severity_classes_: np.ndarray | None = None
+    material_classes_: np.ndarray | None = None
+    settlement_classes_: np.ndarray | None = None
+    stiffness_classes_: np.ndarray | None = None
     timing: dict[str, float] | None = None
 
     @staticmethod
@@ -80,14 +86,20 @@ class XGBoostModel:
         features: list[np.ndarray] = []
         state_targets: list[np.ndarray] = []
         severity_targets: list[np.ndarray] = []
+        material_targets: list[np.ndarray] = []
+        settlement_targets: list[np.ndarray] = []
+        stiffness_targets: list[np.ndarray] = []
         total_batches = len(loader) if hasattr(loader, "__len__") else None
         started = time.perf_counter()
         extraction_started = started
         print(f"xgboost_stage=feature_extraction batches={total_batches or '?'}", flush=True)
         for batch_index, batch in enumerate(loader, start=1):
             features.append(fixed_features(batch))
-            state_targets.append(batch.targets["state_family"].cpu().numpy())
+            state_targets.append(batch.targets["fine_state_family"].cpu().numpy())
             severity_targets.append(batch.targets["global_severity"].cpu().numpy())
+            material_targets.append(batch.targets["material_active"].cpu().numpy())
+            settlement_targets.append(batch.targets["settlement_type"].cpu().numpy())
+            stiffness_targets.append(batch.targets["stiffness_reduction"].cpu().numpy())
             if batch_index == 1 or batch_index % 100 == 0 or (total_batches and batch_index == total_batches):
                 elapsed = time.perf_counter() - started
                 rate = batch_index / max(elapsed, 1e-6)
@@ -97,16 +109,28 @@ class XGBoostModel:
         x = np.concatenate(features)
         y_state = np.concatenate(state_targets)
         y_severity = np.concatenate(severity_targets)
+        y_material = np.concatenate(material_targets)
+        y_settlement = np.concatenate(settlement_targets)
+        y_stiffness = np.concatenate(stiffness_targets)
         self.state_classes_ = np.unique(y_state)
         self.severity_classes_ = np.unique(y_severity)
         state_local = np.searchsorted(self.state_classes_, y_state)
         severity_local = np.searchsorted(self.severity_classes_, y_severity)
+        material_classes = np.unique(y_material)
+        settlement_classes = np.unique(y_settlement)
+        stiffness_classes = np.unique(y_stiffness)
+        material_local = np.searchsorted(material_classes, y_material)
+        settlement_local = np.searchsorted(settlement_classes, y_settlement)
+        stiffness_local = np.searchsorted(stiffness_classes, y_stiffness)
         extraction_elapsed = time.perf_counter() - extraction_started
         common = dict(n_estimators=self.n_estimators, max_depth=self.max_depth,
                       learning_rate=self.learning_rate, random_state=self.random_state,
                       tree_method="hist")
         self.state_model = XGBClassifier(num_class=len(self.state_classes_), objective="multi:softprob", **common)
         self.severity_model = XGBClassifier(num_class=len(self.severity_classes_), objective="multi:softprob", **common)
+        self.material_model = XGBClassifier(num_class=len(material_classes), objective="multi:softprob", **common)
+        self.settlement_model = XGBClassifier(num_class=len(settlement_classes), objective="multi:softprob", **common)
+        self.stiffness_model = XGBClassifier(num_class=len(stiffness_classes), objective="multi:softprob", **common)
         print(f"xgboost_stage=fit_state samples={len(x)} features={x.shape[1]}", flush=True)
         state_started = time.perf_counter()
         self.state_model.fit(x, state_local, verbose=False)
@@ -117,6 +141,12 @@ class XGBoostModel:
         self.severity_model.fit(x, severity_local, verbose=False)
         severity_elapsed = time.perf_counter() - severity_started
         print("xgboost_stage=fit_severity complete", flush=True)
+        self.material_model.fit(x, material_local, verbose=False)
+        self.settlement_model.fit(x, settlement_local, verbose=False)
+        self.stiffness_model.fit(x, stiffness_local, verbose=False)
+        self.material_classes_ = material_classes
+        self.settlement_classes_ = settlement_classes
+        self.stiffness_classes_ = stiffness_classes
         self.timing = {
             "feature_extraction_sec": extraction_elapsed,
             "state_fit_sec": state_elapsed,
@@ -139,6 +169,9 @@ class XGBoostModel:
             "state_family_class_values": self.state_classes_.copy(),
             "global_severity": self.severity_model.predict_proba(x),
             "global_severity_class_values": self.severity_classes_.copy(),
+            "material_active": self.material_model.predict_proba(x),
+            "settlement_type": self.settlement_model.predict_proba(x),
+            "stiffness_reduction": self.stiffness_model.predict_proba(x),
         }
 
     def evaluate_arrays(
@@ -152,16 +185,22 @@ class XGBoostModel:
             raise RuntimeError("Call fit_loader before evaluate_arrays")
         if self.state_classes_ is None or self.severity_classes_ is None:
             raise RuntimeError("Fitted class mappings are unavailable")
+        state_pred = self.state_model.predict(features)
+        severity_pred = self.severity_model.predict(features)
+        if state_pred.ndim > 1:
+            state_pred = state_pred.reshape(state_pred.shape[0], -1).argmax(axis=1)
+        if severity_pred.ndim > 1:
+            severity_pred = severity_pred.reshape(severity_pred.shape[0], -1).argmax(axis=1)
         return {
             "state_family": {
                 "y_true": state_labels,
-                "y_pred": self.state_classes_[self.state_model.predict(features).astype(np.int64)],
+                "y_pred": self.state_classes_[state_pred.astype(np.int64)].reshape(-1),
                 "y_prob": self.state_model.predict_proba(features),
                 "class_values": self.state_classes_,
             },
             "global_severity": {
                 "y_true": severity_labels,
-                "y_pred": self.severity_classes_[self.severity_model.predict(features).astype(np.int64)],
+                "y_pred": self.severity_classes_[severity_pred.astype(np.int64)].reshape(-1),
                 "y_prob": self.severity_model.predict_proba(features),
                 "class_values": self.severity_classes_,
             },

@@ -46,7 +46,7 @@ def make_loader(refs, observation, seed, normalization, batch_size, shuffle=Fals
 
 def evaluate_torch(model, loader, device):
     model.eval()
-    collected = {key: {"true": [], "prob": []} for key in ("state_family", "global_severity")}
+    collected = {key: {"true": [], "prob": []} for key in ("global_severity", "material_active", "settlement_type", "stiffness_reduction", "fine_state_family")}
     loss_sum = 0.0
     sample_count = 0
     with torch.no_grad():
@@ -87,17 +87,32 @@ def pack_metrics(predictions, losses=None):
 
 
 def evaluate_xgboost(model, loader):
-    features, states, severities = [], [], []
+    features, targets = [], {key: [] for key in ("fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction")}
     from ..models.xgboost_model import fixed_features
     for batch in loader:
         features.append(fixed_features(batch))
-        states.append(batch.targets["state_family"].cpu().numpy())
-        severities.append(batch.targets["global_severity"].cpu().numpy())
+        for key in targets:
+            targets[key].append(batch.targets[key].cpu().numpy())
     if not features:
         raise ValueError("Cannot evaluate on an empty split")
     x = np.concatenate(features)
-    state_y, severity_y = np.concatenate(states), np.concatenate(severities)
-    task_predictions = model.evaluate_arrays(x, state_y, severity_y, "evaluation")
+    labels = {key: np.concatenate(values) for key, values in targets.items()}
+    task_predictions = model.evaluate_arrays(x, labels["fine_state_family"], labels["global_severity"], "evaluation")
+    for key in ("material_active", "settlement_type", "stiffness_reduction"):
+        model_attr = {"material_active": "material", "settlement_type": "settlement", "stiffness_reduction": "stiffness"}[key]
+        estimator = getattr(model, f"{model_attr}_model")
+        classes = getattr(model, f"{model_attr}_classes_")
+        local_pred = estimator.predict(x).astype(np.int64)
+        if local_pred.ndim > 1:
+            local_pred = local_pred.reshape(local_pred.shape[0], -1).argmax(axis=1)
+        probabilities = estimator.predict_proba(x)
+        # Some XGBoost/sklearn versions return a single-column probability for
+        # a binary classifier; normalize it to a 2-column multiclass matrix.
+        if probabilities.ndim == 1:
+            probabilities = np.column_stack([1.0 - probabilities, probabilities])
+        elif probabilities.shape[1] == 1 and len(classes) == 2:
+            probabilities = np.column_stack([1.0 - probabilities[:, 0], probabilities[:, 0]])
+        task_predictions[key] = {"y_true": labels[key].reshape(-1), "y_pred": classes[local_pred].reshape(-1), "y_prob": probabilities, "class_values": np.asarray(classes).reshape(-1)}
     metrics = {}
     for key, values in task_predictions.items():
         unsupported = sorted(set(map(int, np.unique(values["y_true"]))) - set(map(int, values["class_values"])))
@@ -105,7 +120,11 @@ def evaluate_xgboost(model, loader):
         task_metrics["cross_entropy"] = multiclass_cross_entropy(values["y_true"], values["y_prob"], values["class_values"])
         task_metrics["unsupported_true_class_values"] = unsupported
         metrics[key] = task_metrics
-    losses = [metrics[key]["cross_entropy"] for key in ("state_family", "global_severity")]
+    # evaluate_arrays names the fine-grained task state_family for backwards
+    # compatibility; expose the new public name in the report as well.
+    if "state_family" in metrics:
+        metrics["fine_state_family"] = metrics.pop("state_family")
+    losses = [metrics[key]["cross_entropy"] for key in ("fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction")]
     metrics["combined_loss"] = sum(losses) if all(value is not None for value in losses) else None
     return metrics
 

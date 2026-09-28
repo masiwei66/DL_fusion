@@ -13,7 +13,9 @@ def classification_metrics(y_true, y_pred, y_prob=None, class_values=None) -> di
     import numpy as np
     from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score
 
-    labels = np.asarray(class_values if class_values is not None else np.unique(np.concatenate([y_true, y_pred])))
+    y_true = np.asarray(y_true).reshape(-1)
+    y_pred = np.asarray(y_pred).reshape(-1)
+    labels = np.asarray(class_values if class_values is not None else np.unique(np.concatenate([y_true, y_pred]))).reshape(-1)
     result: dict[str, object] = {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision_macro": float(precision_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),

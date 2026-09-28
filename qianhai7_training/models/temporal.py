@@ -26,23 +26,31 @@ def temporal_features(batch: WindowBatch) -> torch.Tensor:
 
 
 class TemporalHead(nn.Module):
-    def __init__(self, input_dim: int, representation_dim: int, num_classes: int, severity_classes: int):
+    def __init__(self, input_dim: int, representation_dim: int, num_classes: int, severity_classes: int,
+                 settlement_classes: int = 6):
         super().__init__()
         self.state_head = nn.Linear(representation_dim, num_classes)
         self.severity_head = nn.Linear(representation_dim, severity_classes)
+        self.material_head = nn.Linear(representation_dim, 2)
+        self.settlement_head = nn.Linear(representation_dim, settlement_classes)
+        self.stiffness_head = nn.Linear(representation_dim, 2)
 
     def outputs(self, representation: torch.Tensor) -> dict[str, torch.Tensor]:
         return {
             "representation": representation,
             "state_family": self.state_head(representation),
             "global_severity": self.severity_head(representation),
+            "fine_state_family": self.state_head(representation),
+            "material_active": self.material_head(representation),
+            "settlement_type": self.settlement_head(representation),
+            "stiffness_reduction": self.stiffness_head(representation),
         }
 
 
 class LSTMModel(StudentModel):
     def __init__(self, input_dim: int = 7, hidden_size: int = 128, num_layers: int = 2,
                  dropout: float = 0.1, bidirectional: bool = False, num_classes: int = 40,
-                 severity_classes: int = 6):
+                 severity_classes: int = 4, settlement_classes: int = 6):
         super().__init__()
         self.input_dim = input_dim
         self.encoder = nn.LSTM(
@@ -51,7 +59,7 @@ class LSTMModel(StudentModel):
             bidirectional=bidirectional,
         )
         output_dim = hidden_size * (2 if bidirectional else 1)
-        self.head = TemporalHead(input_dim, output_dim, num_classes, severity_classes)
+        self.head = TemporalHead(input_dim, output_dim, num_classes, severity_classes, settlement_classes)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
         sequence = temporal_features(batch)
@@ -62,32 +70,69 @@ class LSTMModel(StudentModel):
         return self.head.outputs(representation)
 
 
-class ResNet1DModel(StudentModel):
-    """ResNet-1D over point-pooled time features; default depth is ResNet-50."""
+class ResNet50_1DModel(StudentModel):
+    """A configurable ResNet-50 bottleneck encoder for short time windows.
 
-    def __init__(self, input_dim: int = 7, base_width: int = 32, num_classes: int = 40,
-                 severity_classes: int = 6, layers: tuple[int, int, int, int] = (3, 4, 6, 3)):
+    The default stage strides preserve the temporal resolution. With the
+    current window length of six acquisitions, the image-style ``1, 2, 2, 2``
+    schedule would collapse the time axis too early.
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 7,
+        base_width: int = 32,
+        num_classes: int = 40,
+        severity_classes: int = 4,
+        settlement_classes: int = 6,
+        layers: tuple[int, int, int, int] = (3, 4, 6, 3),
+        stage_strides: tuple[int, int, int, int] = (1, 1, 1, 1),
+    ):
         super().__init__()
+        self.input_dim = int(input_dim)
+        self.base_width = int(base_width)
+        self.layers = tuple(int(count) for count in layers)
+        self.stage_strides = tuple(int(stride) for stride in stage_strides)
+        if len(self.layers) != 4:
+            raise ValueError("ResNet-50 1D requires four stage depths, e.g. [3, 4, 6, 3]")
+        if len(self.stage_strides) != 4 or any(stride not in (1, 2) for stride in self.stage_strides):
+            raise ValueError("stage_strides must contain four values, each 1 or 2")
+        if self.input_dim != 7:
+            raise ValueError("temporal_features currently produces exactly 7 input channels")
+        if self.base_width < 1 or any(count < 1 for count in self.layers):
+            raise ValueError("base_width and every ResNet stage depth must be positive")
+
         self.stem = nn.Sequential(
-            nn.Conv1d(input_dim, base_width, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm1d(base_width), nn.ReLU(inplace=True),
+            nn.Conv1d(self.input_dim, self.base_width, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm1d(self.base_width),
+            nn.ReLU(inplace=True),
         )
         blocks: list[nn.Module] = []
-        channels = base_width
-        for stage, count in enumerate(layers):
-            out_channels = base_width * (2 ** stage)
-            stride = 1 if stage == 0 else 2
-            blocks.append(_ResNetStage(channels, out_channels, count, stride))
-            channels = out_channels * 4
+        channels = self.base_width
+        for stage, (count, stride) in enumerate(zip(self.layers, self.stage_strides)):
+            width = self.base_width * (2 ** stage)
+            blocks.append(_ResNetStage(channels, width, count, stride))
+            channels = width * _Bottleneck1D.expansion
         self.stages = nn.Sequential(*blocks)
         self.pool = nn.AdaptiveAvgPool1d(1)
-        representation_dim = channels
-        self.head = TemporalHead(input_dim, representation_dim, num_classes, severity_classes)
+        self.representation_dim = channels
+        self.head = TemporalHead(
+            self.input_dim,
+            self.representation_dim,
+            num_classes,
+            severity_classes,
+            settlement_classes,
+        )
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
         sequence = temporal_features(batch).transpose(1, 2)
         representation = self.pool(self.stages(self.stem(sequence))).squeeze(-1)
         return self.head.outputs(representation)
+
+
+# Keep the original registry name working while exposing an explicit name for
+# new experiments and reports.
+ResNet1DModel = ResNet50_1DModel
 
 
 class _Bottleneck1D(nn.Module):

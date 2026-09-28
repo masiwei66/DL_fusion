@@ -54,6 +54,49 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
             return default
         return value[index]
 
+    @staticmethod
+    def _mechanism_targets(arrays: dict[str, Any], index: int) -> dict[str, int]:
+        """Derive first-stage mechanism labels while preserving fine labels."""
+        def step_bool(key: str) -> np.ndarray:
+            value = np.asarray(arrays.get(key, np.asarray([], dtype=bool)))
+            if value.ndim == 0 or value.size == 0 or value.shape[0] <= index:
+                return np.asarray([], dtype=bool)
+            return np.asarray(value[index], dtype=bool).reshape(-1)
+
+        material = step_bool("material_active_by_acquisition")
+        if material.size == 0:
+            severity = np.asarray(arrays.get("material_severity", np.asarray([])), dtype=np.float32)
+            material_active = int(severity.size > 0 and np.nanmax(severity) > 0)
+        else:
+            material_active = int(material.any())
+
+        support = step_bool("support_active_by_acquisition")
+        by_group = step_bool("support_active_by_acquisition_by_group")
+        if by_group.size:
+            support = by_group
+        local = step_bool("local_deck_active_by_acquisition")
+        stiffness = step_bool("support_stiffness_active_by_acquisition")
+        stiffness_reduction = int(stiffness.any())
+        active_indices = np.flatnonzero(support)
+        if local.any():
+            settlement_type = 5
+        elif active_indices.size == 0:
+            settlement_type = 0
+        elif active_indices.size == 1:
+            settlement_type = 1
+        elif active_indices.size > 1:
+            values = np.asarray(arrays.get("support_settlement_mm", np.asarray([])), dtype=np.float32)
+            step_values = values[index].reshape(-1) if values.ndim >= 2 and values.shape[0] > index else np.zeros(0)
+            active_values = step_values[active_indices] if step_values.size > active_indices.max(initial=-1) else np.zeros(0)
+            settlement_type = 3 if active_values.size > 1 and not np.allclose(active_values, active_values[0]) else 2
+        else:
+            settlement_type = 0
+        return {
+            "material_active": material_active,
+            "settlement_type": int(settlement_type),
+            "stiffness_reduction": stiffness_reduction,
+        }
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         ref = self.refs[index]
         arrays = HDF5StateSource(ref.record.path).read()
@@ -76,6 +119,7 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         support_mm = self._at_step(arrays["support_settlement_mm"], ref.target_index, np.zeros(0, dtype=np.float32))
         support_ratio = self._at_step(arrays["support_settlement_ratio"], ref.target_index, np.zeros(0, dtype=np.float32))
         local_deck = self._at_step(arrays["local_deck_settlement_mm"], ref.target_index, np.zeros(0, dtype=np.float32))
+        mechanisms = self._mechanism_targets(arrays, ref.target_index)
         ratio_value = float(np.nanmax(np.asarray(support_ratio, dtype=np.float32))) if np.asarray(support_ratio).size else 0.0
         material = np.asarray(arrays["material_severity"], dtype=np.float32)
         material_value = float(np.nanmax(material)) if material.size else 0.0
@@ -91,7 +135,9 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
             "delta_days_valid_mask": delta_days_valid_mask,
             "delta_days": delta_days,
             "target_state_family": arrays["state_family_code"][ref.target_index],
+            "target_fine_state_family": arrays["state_family_code"][ref.target_index],
             "target_global_severity": arrays["global_severity"][ref.target_index],
+            **{f"target_{key}": value for key, value in mechanisms.items()},
             "target_global_severity_value": ratio_value,
             "target_support_settlement_mm": np.asarray(support_mm, dtype=np.float32),
             "target_support_settlement_ratio": np.asarray(support_ratio, dtype=np.float32),
@@ -155,8 +201,12 @@ def collate_window_batches(items: list[dict[str, Any]]) -> WindowBatch:
         temperature_valid_mask=torch.from_numpy(np.stack([item["temperature_valid_mask"][:, None] for item in items])).bool(),
         teacher_features={"modal_frequencies": torch.nn.utils.rnn.pad_sequence([torch.from_numpy(np.asarray(item["teacher_features"]["modal_frequencies"], dtype=np.float32)) for item in items], batch_first=True)},
         targets={
-            "state_family": torch.tensor([item["target_state_family"] for item in items], dtype=torch.long),
+            "fine_state_family": torch.tensor([item["target_fine_state_family"] for item in items], dtype=torch.long),
+            "state_family": torch.tensor([item["target_fine_state_family"] for item in items], dtype=torch.long),
             "global_severity": torch.tensor([item["target_global_severity"] for item in items], dtype=torch.long),
+            "material_active": torch.tensor([item["target_material_active"] for item in items], dtype=torch.long),
+            "settlement_type": torch.tensor([item["target_settlement_type"] for item in items], dtype=torch.long),
+            "stiffness_reduction": torch.tensor([item["target_stiffness_reduction"] for item in items], dtype=torch.long),
             "global_severity_value": torch.tensor([item["target_global_severity_value"] for item in items], dtype=torch.float32),
             "support_settlement_mm": support_mm,
             "support_settlement_mm_valid": support_mm_valid,
