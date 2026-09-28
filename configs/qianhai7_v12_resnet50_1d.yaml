@@ -2,10 +2,15 @@ data:
   data_root: E:/working/DL_data/qianhai_test
   window_length: 6
   stride: 1
+  eval_stride: 6
   virtual_point_count_min: 50
   virtual_point_count_max: 100
   noise_std_mm: 0.2
   missing_probability: 0.05
+  observation_realizations: 4
+  split_stratify: true
+  noise_scan_std_mm: [0.0, 0.1, 0.2, 0.4]
+  missing_scan_probability: [0.0, 0.05, 0.1, 0.2]
   split_seed: 20260924
 
 train:
@@ -13,6 +18,7 @@ train:
   epochs: 30
   learning_rate: 0.001
   weight_decay: 0.0001
+  early_stopping_patience: 10
   num_workers: 4
   prefetch_factor: 2
   persistent_workers: true

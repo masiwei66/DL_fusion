@@ -12,6 +12,10 @@ from .normalization import NormalizationStats
 from .observation import ObservationConfig, sample_virtual_observation
 from .windows import WindowRef
 
+# Large enough to dominate `sum(ord(char) for char in state_id)`, so that
+# realization 0 reproduces the original single-realization seeds exactly.
+_REALIZATION_STRIDE = 10**6
+
 
 class QianhaiWindowDataset(Dataset[dict[str, Any]]):
     # Everything a window needs from a state other than the observation view. The
@@ -40,27 +44,33 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         observation: ObservationConfig,
         seed: int = 42,
         normalization: NormalizationStats | None = None,
+        realizations: int = 1,
     ):
         self.refs = refs
         self.observation = observation
         self.seed = seed
         self.normalization = normalization
-        self._state_cache: dict[str, dict[str, Any]] = {}
+        self.realizations = max(int(realizations), 1)
+        self._state_cache: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def _get_state(self, ref: WindowRef) -> dict[str, Any]:
-        """Read one structural state once per process and keep what its windows need.
+    def _realization_seed(self, state_id: str, realization: int) -> int:
+        return self.seed + sum(ord(char) for char in state_id) + realization * _REALIZATION_STRIDE
+
+    def _get_state(self, ref: WindowRef, realization: int) -> dict[str, Any]:
+        """Read one (state, observation realization) once per process.
 
         All windows of a state reuse the same label arrays and the same virtual
         observation, so the trajectory is reduced to a small bundle on first use.
-        Repeats then cost a dictionary lookup instead of an HDF5 read.
+        Repeats then cost a dictionary lookup instead of an HDF5 read. Keying on
+        the realization as well keeps `realizations > 1` cheap: every variant is
+        built once and then reused for the rest of the run.
         """
-        key = ref.record.structural_state_id
+        key = (ref.record.structural_state_id, realization)
         bundle = self._state_cache.get(key)
         if bundle is not None:
             return bundle
         arrays = HDF5StateSource(ref.record.path).read()
-        seed = self.seed + sum(ord(char) for char in key)
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(self._realization_seed(ref.record.structural_state_id, realization))
         point_count = int(rng.integers(self.observation.point_count_min, self.observation.point_count_max + 1))
         view = sample_virtual_observation(
             arrays["node_coords"], arrays["deck_node_mask"], arrays["displacement_uz"],
@@ -73,7 +83,7 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         return bundle
 
     def __len__(self) -> int:
-        return len(self.refs)
+        return len(self.refs) * self.realizations
 
     @staticmethod
     def _at_step(array: np.ndarray, index: int, default: Any) -> Any:
@@ -126,8 +136,10 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         }
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        ref = self.refs[index]
-        state = self._get_state(ref)
+        window_count = len(self.refs)
+        ref = self.refs[index % window_count]
+        realization = index // window_count
+        state = self._get_state(ref, realization)
         view = state["view"]
         arrays = state["arrays"]
         sl = slice(ref.start, ref.start + ref.length)
@@ -180,8 +192,8 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
                 "mapping_valid_fraction": float(view["mapping_valid"].mean()),
                 "mapping_distance_max": float(view["mapping_distance"].max()),
                 "point_count": int(view["point_count"]),
-                "observation_realization_id": 0,
-                "point_count_seed": self.seed + sum(ord(char) for char in ref.record.structural_state_id),
+                "observation_realization_id": realization,
+                "point_count_seed": self._realization_seed(ref.record.structural_state_id, realization),
             },
             "teacher_features": {
                 "modal_frequencies": arrays.get("modal_frequencies", np.zeros(0, dtype=np.float32)),

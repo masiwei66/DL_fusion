@@ -72,7 +72,8 @@
       "Bash(md5sum \"前海7号桥PS点位数据.xlsx\" \"前海7号桥PS点位数据/前海7号桥PS点位数据.xlsx\")",
       "Bash(./.venv/Scripts/python.exe -m py_compile qianhai7_training/config.py qianhai7_training/cli/train.py qianhai7_training/training/engine.py)",
       "Bash(./.venv/Scripts/python.exe *)",
-      "Bash(awk '{print $5, $NF}')"
+      "Bash(awk '{print $5, $NF}')",
+      "Bash(grep -E \"models/.*\\\\.json$|cli/runs\")"
     ]
   }
 }

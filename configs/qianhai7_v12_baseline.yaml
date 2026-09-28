@@ -2,15 +2,24 @@ data:
   data_root: E:/working/DL_data/qianhai_test
   window_length: 6
   stride: 1
+  eval_stride: 6
   virtual_point_count_min: 50
   virtual_point_count_max: 100
   noise_std_mm: 0.2
   missing_probability: 0.05
+  # Cached virtual-observation realizations, rotated one per epoch. 1 = off.
+  observation_realizations: 4
+  # Stratify the state-level split by state_family_id so no mechanism family is
+  # missing from training.
+  split_stratify: true
+  noise_scan_std_mm: [0.0, 0.1, 0.2, 0.4]
+  missing_scan_probability: [0.0, 0.05, 0.1, 0.2]
   split_seed: 20260924
 train:
   batch_size: 32
   epochs: 2
   learning_rate: 0.001
+  early_stopping_patience: 10
   # CPU data-loading workers. Start with 4, then compare rate and memory.
   num_workers: 4
   prefetch_factor: 2

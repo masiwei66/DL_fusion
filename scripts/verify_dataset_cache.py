@@ -49,13 +49,16 @@ def main() -> None:
     parser.add_argument("--save", type=Path, default=None)
     parser.add_argument("--compare", type=Path, default=None)
     parser.add_argument("--samples", type=int, default=40)
+    parser.add_argument("--realizations", type=int, default=1)
     args = parser.parse_args()
 
     config = load_experiment_config(str(Path(__file__).resolve().parents[1] / "configs" / "qianhai7_v12_baseline.yaml"))
     data = config.data
     index = build_archive_index(data.data_root)
     refs = make_window_refs(index, data.window_length, data.stride)
-    splits = split_by_state(refs, data.split_seed, data.train_fraction, data.validation_fraction)
+    # Pinned to the unstratified shuffle so the sampled states - and therefore the
+    # digest - depend only on the dataset code, not on the split policy.
+    splits = split_by_state(refs, data.split_seed, data.train_fraction, data.validation_fraction, stratify=False)
     normalization = fit_normalization_stats(splits["train"])
     observation = ObservationConfig(
         data.virtual_point_count_min, data.virtual_point_count_max, data.noise_std_mm, data.missing_probability
@@ -70,15 +73,22 @@ def main() -> None:
     step = max(1, len(states) // args.samples)
     picked = [by_state[states[i]][0] for i in range(0, len(states), step)][: args.samples]
 
-    dataset = QianhaiWindowDataset(picked, observation, data.seed, normalization)
+    dataset = QianhaiWindowDataset(picked, observation, data.seed, normalization, realizations=args.realizations)
     started = time.perf_counter()
-    digests = [digest(dataset[i]) for i in range(len(picked))]
+    digestable = len(picked)  # one realization per window, so len(dataset) == len(picked)
+    digests = [digest(dataset[i]) for i in range(digestable)]
     elapsed = time.perf_counter() - started
 
-    print(f"states_total={len(states)} sampled={len(picked)}")
+    print(f"states_total={len(states)} sampled={len(picked)} realizations={args.realizations}")
     print(f"unique_digests={len(set(digests))}")
-    print(f"elapsed_sec={elapsed:.2f} per_sample_ms={elapsed / len(picked) * 1000:.1f}")
+    print(f"elapsed_sec={elapsed:.2f} per_sample_ms={elapsed / digestable * 1000:.1f}")
     print(f"combined={hashlib.sha256(''.join(digests).encode()).hexdigest()}")
+
+    # Reported separately: adding these to the digest would change it for
+    # identical data and invalidate the stored baseline.
+    realization_ids = sorted({dataset[i]["metadata"]["observation_realization_id"] for i in range(digestable)})
+    seeds = sorted({dataset[i]["metadata"]["point_count_seed"] for i in range(digestable)})
+    print(f"observation_realization_ids={realization_ids} distinct_point_count_seeds={len(seeds)}")
 
     if args.save is not None:
         args.save.write_text(json.dumps(digests), encoding="utf-8")

@@ -21,6 +21,7 @@ class DataConfig:
     data_root: Path
     window_length: int = 6
     stride: int = 1
+    eval_stride: int | None = None
     virtual_point_count_min: int = 50
     virtual_point_count_max: int = 100
     noise_std_mm: float = 0.2
@@ -29,6 +30,14 @@ class DataConfig:
     split_seed: int = 20260924
     train_fraction: float = 0.7
     validation_fraction: float = 0.15
+    # Stratify the state-level split by state_family_id so every mechanism family
+    # reaches the training split. False restores the plain random shuffle.
+    split_stratify: bool = True
+    # Number of cached virtual-observation realizations rotated one per epoch.
+    # 1 means a single deterministic realization (no augmentation).
+    observation_realizations: int = 1
+    noise_scan_std_mm: tuple[float, ...] = (0.0, 0.1, 0.2, 0.4)
+    missing_scan_probability: tuple[float, ...] = (0.0, 0.05, 0.1, 0.2)
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,11 @@ class TrainConfig:
     progress: str = "auto"
     # Log-mode frequency. Capped so short loops still emit about ten lines.
     log_every_batches: int = 100
+    # Tasks averaged into the best-checkpoint score. Tasks differ by orders of
+    # magnitude in difficulty, so the default is the primary task alone.
+    selection_tasks: tuple[str, ...] = ("fine_state_family",)
+    # Stop once the selection score has not improved for this many epochs; 0 disables.
+    early_stopping_patience: int = 10
 
     def __post_init__(self) -> None:
         if self.num_workers < 0:
@@ -61,6 +75,10 @@ class TrainConfig:
             raise ValueError("train.log_every_batches must be >= 0")
         if self.progress not in ("auto", "bar", "log", "off"):
             raise ValueError("train.progress must be one of: auto, bar, log, off")
+        if self.early_stopping_patience < 0:
+            raise ValueError("train.early_stopping_patience must be >= 0")
+        if not self.selection_tasks:
+            raise ValueError("train.selection_tasks must name at least one task")
         if self.num_workers == 0 and self.persistent_workers:
             object.__setattr__(self, "persistent_workers", False)
 

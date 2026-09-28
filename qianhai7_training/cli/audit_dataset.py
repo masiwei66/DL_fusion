@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import argparse
 import collections
+import sys
+from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if __package__ in (None, ""):
+    # Allow both `python -m qianhai7_training.cli.audit_dataset` and direct IDE execution.
+    sys.path.insert(0, str(_PROJECT_ROOT))
+    __package__ = "qianhai7_training.cli"
 
 from ..data.manifest import build_archive_index
 

@@ -4,6 +4,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -21,7 +22,8 @@ from ..data.dataset import QianhaiWindowDataset, collate_window_batches
 from ..data.manifest import build_archive_index
 from ..data.normalization import fit_normalization_stats
 from ..data.observation import ObservationConfig
-from ..data.windows import make_window_refs, split_by_state
+from ..data.sampler import RotatingRealizationSampler
+from ..data.windows import make_window_refs, missing_train_families, split_by_state, split_distribution
 from ..models.registry import build_model
 from ..training.engine import train_one_epoch
 from ..training.losses import supervised_loss
@@ -30,16 +32,51 @@ from ..training.progress import make_progress
 from ..training.report import Stopwatch, classification_metrics, count_parameters, multiclass_cross_entropy, write_report
 
 
+def describe_run(data, splits, eval_splits, eval_stride, realizations, distribution) -> dict[str, Any]:
+    """Data settings and split sizes, so a report can be interpreted later."""
+    return {
+        "window_length": data.window_length,
+        "stride": data.stride,
+        "eval_stride": eval_stride,
+        "split_stratify": data.split_stratify,
+        "split_seed": data.split_seed,
+        "data_seed": data.seed,
+        "train_fraction": data.train_fraction,
+        "validation_fraction": data.validation_fraction,
+        "observation_realizations": realizations,
+        "noise_std_mm": data.noise_std_mm,
+        "missing_probability": data.missing_probability,
+        "virtual_point_count_min": data.virtual_point_count_min,
+        "virtual_point_count_max": data.virtual_point_count_max,
+        "train_windows": len(splits["train"]),
+        "validation_windows": len(eval_splits["validation"]),
+        "test_windows": len(eval_splits["test"]),
+        "train_states": distribution["train"]["unique_states"],
+        "validation_states": distribution["validation"]["unique_states"],
+        "test_states": distribution["test"]["unique_states"],
+        "families_missing_from_train": distribution["missing_from_train"],
+    }
+
+
 def make_loader(refs, observation, seed, normalization, batch_size, shuffle=False, *, num_workers=0,
-                prefetch_factor=2, persistent_workers=False, pin_memory=False):
+                prefetch_factor=2, persistent_workers=False, pin_memory=False, realizations=1, sampler=None):
+    if realizations > 1 and sampler is None:
+        raise ValueError(
+            "realizations > 1 requires a RotatingRealizationSampler; sequential iteration "
+            "would put the same window in a batch once per realization"
+        )
     options = dict(
-        dataset=QianhaiWindowDataset(refs, observation, seed, normalization),
+        dataset=QianhaiWindowDataset(refs, observation, seed, normalization, realizations=realizations),
         batch_size=batch_size,
-        shuffle=shuffle,
         collate_fn=collate_window_batches,
         num_workers=num_workers,
         pin_memory=pin_memory,
     )
+    # DataLoader rejects shuffle and sampler together.
+    if sampler is not None:
+        options["sampler"] = sampler
+    else:
+        options["shuffle"] = shuffle
     if num_workers > 0:
         options["prefetch_factor"] = prefetch_factor
         options["persistent_workers"] = persistent_workers
@@ -182,7 +219,21 @@ def main() -> None:
     refs = make_window_refs(index, data.window_length, data.stride)
     print(f"stage=window_refs windows={len(refs)} window_length={data.window_length} stride={data.stride} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
     stage_started = time.perf_counter()
-    splits = split_by_state(refs, data.split_seed, data.train_fraction, data.validation_fraction)
+    splits = split_by_state(refs, data.split_seed, data.train_fraction, data.validation_fraction, stratify=data.split_stratify)
+    eval_stride = data.eval_stride or data.stride
+    eval_refs = make_window_refs(index, data.window_length, eval_stride)
+    eval_splits = split_by_state(eval_refs, data.split_seed, data.train_fraction, data.validation_fraction, stratify=data.split_stratify)
+    distribution = split_distribution(splits)
+    missing_families = distribution["missing_from_train"]
+    print(
+        f"split_audit stratify={data.split_stratify} "
+        f"states=train:{distribution['train']['unique_states']}"
+        f"/validation:{distribution['validation']['unique_states']}"
+        f"/test:{distribution['test']['unique_states']} "
+        f"families_missing_from_train={len(missing_families)}"
+        + (f" {missing_families}" if missing_families else ""),
+        flush=True,
+    )
     print(f"stage=split train={len(splits['train'])} validation={len(splits['validation'])} test={len(splits['test'])} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
     stage_started = time.perf_counter()
     normalization = fit_normalization_stats(splits["train"])
@@ -197,9 +248,24 @@ def main() -> None:
         "persistent_workers": train.persistent_workers,
         "pin_memory": train.pin_memory,
     }
-    loader = make_loader(splits["train"], observation, data.seed, normalization, train.batch_size, shuffle=True, **loader_kwargs)
-    validation_loader = make_loader(splits["validation"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
-    test_loader = make_loader(splits["test"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
+    realizations = max(int(data.observation_realizations), 1)
+    # Always routed through the sampler: shuffling then comes from an explicit
+    # seed instead of the global torch RNG, whose state depends on how much
+    # randomness model construction consumed first.
+    train_sampler = RotatingRealizationSampler(len(splits["train"]), realizations, seed=data.split_seed)
+    loader = make_loader(splits["train"], observation, data.seed, normalization, train.batch_size,
+                         realizations=realizations, sampler=train_sampler, **loader_kwargs)
+    # Evaluation stays on a single deterministic realization so metrics are
+    # comparable across epochs and runs.
+    validation_loader = make_loader(eval_splits["validation"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
+    test_loader = make_loader(eval_splits["test"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
+    if realizations > 1:
+        per_worker_mib = distribution["train"]["unique_states"] * realizations * 25 / 1024
+        print(
+            f"observation_realizations={realizations} epoch_rotation={realizations} "
+            f"estimated_cache_mib={per_worker_mib * max(train.num_workers, 1):.0f}",
+            flush=True,
+        )
     print(f"states={len(index.records)} windows={len(refs)} train={len(splits['train'])} validation={len(splits['validation'])} test={len(splits['test'])}", flush=True)
     print(f"normalization_stats={normalization_path}", flush=True)
     print(f"model={config.model.name} params={config.model.kwargs}", flush=True)
@@ -228,6 +294,7 @@ def main() -> None:
             "states": len(index.records),
             "windows": len(refs),
             "train_windows": len(splits["train"]),
+            "data": describe_run(data, splits, eval_splits, eval_stride, realizations, distribution),
             "timing_sec": {**(model.timing or {}), "total_process_sec": total_elapsed},
             "class_mappings": {
                 "state_family": (model.state_classes_.tolist() if model.state_classes_ is not None else []),
@@ -255,19 +322,28 @@ def main() -> None:
     weights_dir.mkdir(parents=True, exist_ok=True)
     epoch_times: list[float] = []
     history: list[dict[str, object]] = []
+    best_score = float("-inf")
+    best_epoch = 0
+    stopped_epoch = 0
+    epochs_without_improvement = 0
     history_path = train.output_root / "history.json"
+    checkpoint_path = weights_dir / f"{config.model.name}_best.pt"
+    selection_tasks = tuple(train.selection_tasks)
     for epoch in range(train.epochs):
+        train_sampler.set_epoch(epoch)
         epoch_started = time.perf_counter()
         loss = train_one_epoch(model, loader, optimizer, device, desc=f"train_batches epoch={epoch + 1}", progress=progress_options)
         epoch_elapsed = time.perf_counter() - epoch_started
         epoch_times.append(epoch_elapsed)
         validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
         validation_metrics = pack_metrics(validation_predictions)
+        selection_score = float(np.mean([validation_metrics[key]["f1_macro"] for key in selection_tasks]))
         history_row: dict[str, object] = {
             "epoch": epoch + 1,
             "train_loss": float(loss),
             "validation_loss": float(validation_loss),
             "learning_rate": float(optimizer.param_groups[0]["lr"]),
+            "validation_selection_macro_f1": selection_score,
         }
         for task, task_metrics in validation_metrics.items():
             if task == "combined_loss":
@@ -276,14 +352,29 @@ def main() -> None:
             history_row[f"validation_{task}_accuracy"] = float(task_metrics["accuracy"])
         history.append(history_row)
         write_history(history_path, history)
+        if selection_score > best_score:
+            best_score = selection_score
+            best_epoch = epoch + 1
+            epochs_without_improvement = 0
+            save_torch_checkpoint(checkpoint_path, model, optimizer, config, normalization, epoch + 1)
+        else:
+            epochs_without_improvement += 1
         print(
             f"epoch={epoch + 1} train_loss={loss:.6f} validation_loss={validation_loss:.6f} "
             f"validation_fine_state_f1={validation_metrics['fine_state_family']['f1_macro']:.6f} "
-            f"elapsed_sec={epoch_elapsed:.1f}",
+            f"selection_score={selection_score:.6f} elapsed_sec={epoch_elapsed:.1f}",
             flush=True,
         )
-    checkpoint_path = weights_dir / f"{config.model.name}_best.pt"
-    save_torch_checkpoint(checkpoint_path, model, optimizer, config, normalization, train.epochs)
+        if train.early_stopping_patience and epochs_without_improvement >= train.early_stopping_patience:
+            stopped_epoch = epoch + 1
+            print(
+                f"early_stopping epoch={stopped_epoch} best_epoch={best_epoch} "
+                f"best_value={best_score:.6f} patience={train.early_stopping_patience}",
+                flush=True,
+            )
+            break
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
     validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
     test_loss, test_predictions = evaluate_torch(model, test_loader, device, desc="test_batches", progress=progress_options)
     history_plot_path = train.output_root / "training_history.png"
@@ -301,6 +392,7 @@ def main() -> None:
         "states": len(index.records),
         "windows": len(refs),
         "train_windows": len(splits["train"]),
+        "data": describe_run(data, splits, eval_splits, eval_stride, realizations, distribution),
         "parameters": count_parameters(model),
         "timing_sec": {
             "epoch_sec": epoch_times,
@@ -316,6 +408,15 @@ def main() -> None:
         "metrics": {
             "validation": pack_metrics(validation_predictions, validation_loss),
             "test": test_metrics,
+        },
+        "selection": {
+            "tasks": list(selection_tasks),
+            "metric": "mean_macro_f1",
+            "best_epoch": best_epoch,
+            "best_value": best_score,
+            "early_stopping_patience": train.early_stopping_patience,
+            "epochs_run": len(epoch_times),
+            "stopped_epoch": stopped_epoch,
         },
     }
     report_path = train.output_root / "training_report.json"
