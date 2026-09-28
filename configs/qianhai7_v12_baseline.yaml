@@ -9,40 +9,28 @@ data:
   split_seed: 20260924
 train:
   batch_size: 32
-  epochs: 1
+  epochs: 2
   learning_rate: 0.001
   # CPU data-loading workers. Start with 4, then compare rate and memory.
   num_workers: 4
   prefetch_factor: 2
   persistent_workers: true
-  pin_memory: false
+  # Faster host->GPU copies. On a CPU-only torch build this is ignored (warning at most).
+  pin_memory: true
 model:
   # Change this name to switch the experiment after the corresponding model is implemented.
   # choices: mlp, xgboost, resnet50_1d, resnet1d, lstm, gru, transformer, gnn_lstm
 
-  name: xgboost
+  name: resnet50_1d
   params:
-    n_estimators: 300
-    max_depth: 6
-    learning_rate: 0.05
+    input_dim: 9
 
-# Examples:
-# model:
-#   name: xgboost
-#   params:
-#     n_estimators: 300
-#     max_depth: 6
-#     learning_rate: 0.05
-# model:
-#   name: resnet50_1d
-#   params:
-#     input_dim: 7
-#     base_width: 32
-#     num_classes: 40
-#     severity_classes: 4
-#     settlement_classes: 6
-#     layers: [3, 4, 6, 3]
-#     stage_strides: [1, 1, 1, 1]
+    base_width: 64
+    num_classes: 40
+    severity_classes: 4
+    settlement_classes: 6
+    layers: [3, 4, 6, 3]
+    stage_strides: [1, 1, 1, 1]
 # model:
 #   name: lstm
 #   params:

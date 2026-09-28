@@ -117,7 +117,7 @@ def build_observation_map(
 def sample_virtual_observation(
     node_coords: np.ndarray,
     deck_node_mask: np.ndarray,
-    displacement: np.ndarray,
+    displacement_uz: np.ndarray,
     config: ObservationConfig,
     rng: np.random.Generator,
     *,
@@ -144,7 +144,7 @@ def sample_virtual_observation(
         deck_element_connectivity,
         tolerance=config.interpolation_tolerance,
     )
-    values = mapping.interpolate(displacement[:, :, 2]).astype(np.float32)
+    values = mapping.interpolate(displacement_uz).astype(np.float32)
     if config.reference_mode == "first_step":
         values = values - values[0:1]
     elif config.reference_mode != "none":

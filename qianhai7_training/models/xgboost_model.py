@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from ..contracts import WindowBatch
+from ..training.progress import make_progress
 
 
 def fixed_features(batch: WindowBatch) -> np.ndarray:
@@ -78,7 +79,8 @@ class XGBoostModel:
             raise ValueError(f"{split} {task} contains labels absent from training: {unknown}")
         return np.fromiter((lookup[int(label)] for label in labels), dtype=np.int64, count=len(labels))
 
-    def fit_loader(self, loader: Any) -> None:
+    def fit_loader(self, loader: Any, *, desc: str | None = "xgboost_feature_batches",
+                   progress: dict[str, Any] | None = None) -> None:
         try:
             from xgboost import XGBClassifier
         except ImportError as exc:
@@ -92,18 +94,15 @@ class XGBoostModel:
         total_batches = len(loader) if hasattr(loader, "__len__") else None
         started = time.perf_counter()
         extraction_started = started
-        print(f"xgboost_stage=feature_extraction batches={total_batches or '?'}", flush=True)
-        for batch_index, batch in enumerate(loader, start=1):
-            features.append(fixed_features(batch))
-            state_targets.append(batch.targets["fine_state_family"].cpu().numpy())
-            severity_targets.append(batch.targets["global_severity"].cpu().numpy())
-            material_targets.append(batch.targets["material_active"].cpu().numpy())
-            settlement_targets.append(batch.targets["settlement_type"].cpu().numpy())
-            stiffness_targets.append(batch.targets["stiffness_reduction"].cpu().numpy())
-            if batch_index == 1 or batch_index % 100 == 0 or (total_batches and batch_index == total_batches):
-                elapsed = time.perf_counter() - started
-                rate = batch_index / max(elapsed, 1e-6)
-                print(f"xgboost_stage=feature_extraction progress={batch_index}/{total_batches or '?'} rate={rate:.2f} batches_per_sec", flush=True)
+        with make_progress(desc, total=total_batches, options=progress) as tracker:
+            for batch_index, batch in enumerate(loader, start=1):
+                features.append(fixed_features(batch))
+                state_targets.append(batch.targets["fine_state_family"].cpu().numpy())
+                severity_targets.append(batch.targets["global_severity"].cpu().numpy())
+                material_targets.append(batch.targets["material_active"].cpu().numpy())
+                settlement_targets.append(batch.targets["settlement_type"].cpu().numpy())
+                stiffness_targets.append(batch.targets["stiffness_reduction"].cpu().numpy())
+                tracker.update(batch_index)
         if not features:
             raise ValueError("Cannot fit XGBoost on an empty loader")
         x = np.concatenate(features)

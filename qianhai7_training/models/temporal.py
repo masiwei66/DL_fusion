@@ -8,7 +8,11 @@ from .base import StudentModel
 
 
 def temporal_features(batch: WindowBatch) -> torch.Tensor:
-    """Convert the variable-point contract to fixed-width [B, W, F] features."""
+    """Convert the variable-point contract to fixed-width [B, W, F] features.
+
+    The normalized mean x/y coordinates are static over the window and are
+    repeated across time so the temporal encoder can use absolute location.
+    """
     mask = (batch.valid_mask & batch.point_present_mask[:, None, :]).float()
     values = batch.values
     denom = mask.sum(dim=2, keepdim=True).clamp_min(1.0)
@@ -22,7 +26,11 @@ def temporal_features(batch: WindowBatch) -> torch.Tensor:
     valid_ratio = mask.mean(dim=2, keepdim=True)
     time_mask = batch.temperature_valid_mask.float()
     time = batch.time_features * time_mask
-    return torch.cat([mean, std, minimum, maximum, valid_ratio, time], dim=-1)
+    point_mask = batch.point_present_mask.float().unsqueeze(-1)
+    coordinate_mean = (batch.point_features * point_mask).sum(dim=1)
+    coordinate_mean = coordinate_mean / point_mask.sum(dim=1).clamp_min(1.0)
+    coordinate_sequence = coordinate_mean.unsqueeze(1).expand(-1, values.shape[1], -1)
+    return torch.cat([mean, std, minimum, maximum, valid_ratio, time, coordinate_sequence], dim=-1)
 
 
 class TemporalHead(nn.Module):
@@ -48,7 +56,7 @@ class TemporalHead(nn.Module):
 
 
 class LSTMModel(StudentModel):
-    def __init__(self, input_dim: int = 7, hidden_size: int = 128, num_layers: int = 2,
+    def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
                  dropout: float = 0.1, bidirectional: bool = False, num_classes: int = 40,
                  severity_classes: int = 4, settlement_classes: int = 6):
         super().__init__()
@@ -80,7 +88,7 @@ class ResNet50_1DModel(StudentModel):
 
     def __init__(
         self,
-        input_dim: int = 7,
+        input_dim: int = 9,
         base_width: int = 32,
         num_classes: int = 40,
         severity_classes: int = 4,
@@ -97,8 +105,8 @@ class ResNet50_1DModel(StudentModel):
             raise ValueError("ResNet-50 1D requires four stage depths, e.g. [3, 4, 6, 3]")
         if len(self.stage_strides) != 4 or any(stride not in (1, 2) for stride in self.stage_strides):
             raise ValueError("stage_strides must contain four values, each 1 or 2")
-        if self.input_dim != 7:
-            raise ValueError("temporal_features currently produces exactly 7 input channels")
+        if self.input_dim != 9:
+            raise ValueError("temporal_features currently produces exactly 9 input channels")
         if self.base_width < 1 or any(count < 1 for count in self.layers):
             raise ValueError("base_width and every ResNet stage depth must be positive")
 

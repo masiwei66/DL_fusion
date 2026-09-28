@@ -1,0 +1,32 @@
+data:
+  data_root: E:/working/DL_data/qianhai_test
+  window_length: 6
+  stride: 1
+  virtual_point_count_min: 50
+  virtual_point_count_max: 100
+  noise_std_mm: 0.2
+  missing_probability: 0.05
+  split_seed: 20260924
+
+train:
+  batch_size: 32
+  epochs: 30
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  num_workers: 4
+  prefetch_factor: 2
+  persistent_workers: true
+  pin_memory: true
+  output_root: result_report/resnet50_1d/v1
+
+model:
+  name: resnet50_1d
+  params:
+    input_dim: 9
+    base_width: 32
+    num_classes: 40
+    severity_classes: 4
+    settlement_classes: 6
+    layers: [3, 4, 6, 3]
+    # Keep all temporal resolutions for the six-step window.
+    stage_strides: [1, 1, 1, 1]

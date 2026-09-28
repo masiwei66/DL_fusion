@@ -3,3 +3,8 @@ h5py>=3.10
 PyYAML>=6.0
 torch>=2.2
 xgboost>=2.0
+# Metrics (training/report.py), plots (training/plots.py) and progress bars
+# (training/progress.py). The progress helper degrades to log lines without tqdm.
+scikit-learn>=1.3
+matplotlib>=3.8
+tqdm>=4.66

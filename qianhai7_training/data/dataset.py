@@ -14,6 +14,26 @@ from .windows import WindowRef
 
 
 class QianhaiWindowDataset(Dataset[dict[str, Any]]):
+    # Everything a window needs from a state other than the observation view. The
+    # displacement field is deliberately absent: it only feeds the observation, so
+    # keeping it would defeat the cache with a multi-megabyte read per window.
+    _STATE_ARRAYS = (
+        "temperature_C",
+        "delta_days",
+        "state_family_code",
+        "global_severity",
+        "material_active_by_acquisition",
+        "support_active_by_acquisition",
+        "support_active_by_acquisition_by_group",
+        "support_stiffness_active_by_acquisition",
+        "local_deck_active_by_acquisition",
+        "support_settlement_mm",
+        "support_settlement_ratio",
+        "local_deck_settlement_mm",
+        "material_severity",
+        "modal_frequencies",
+    )
+
     def __init__(
         self,
         refs: list[WindowRef],
@@ -25,24 +45,32 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         self.observation = observation
         self.seed = seed
         self.normalization = normalization
-        self._observation_cache: dict[str, dict[str, np.ndarray]] = {}
+        self._state_cache: dict[str, dict[str, Any]] = {}
 
-    def _get_observation(self, ref: WindowRef, arrays: dict[str, Any]) -> dict[str, np.ndarray]:
+    def _get_state(self, ref: WindowRef) -> dict[str, Any]:
+        """Read one structural state once per process and keep what its windows need.
+
+        All windows of a state reuse the same label arrays and the same virtual
+        observation, so the trajectory is reduced to a small bundle on first use.
+        Repeats then cost a dictionary lookup instead of an HDF5 read.
+        """
         key = ref.record.structural_state_id
-        cached = self._observation_cache.get(key)
-        if cached is not None:
-            return cached
+        bundle = self._state_cache.get(key)
+        if bundle is not None:
+            return bundle
+        arrays = HDF5StateSource(ref.record.path).read()
         seed = self.seed + sum(ord(char) for char in key)
         rng = np.random.default_rng(seed)
         point_count = int(rng.integers(self.observation.point_count_min, self.observation.point_count_max + 1))
-        cached = sample_virtual_observation(
-            arrays["node_coords"], arrays["deck_node_mask"], arrays["displacement"],
+        view = sample_virtual_observation(
+            arrays["node_coords"], arrays["deck_node_mask"], arrays["displacement_uz"],
             self.observation, rng, node_ids=arrays["node_ids"],
             deck_element_connectivity=arrays["deck_element_connectivity"], point_count=point_count,
         )
-        cached["point_count"] = np.asarray(point_count, dtype=np.int64)
-        self._observation_cache[key] = cached
-        return cached
+        view["point_count"] = np.asarray(point_count, dtype=np.int64)
+        bundle = {"view": view, "arrays": {name: arrays[name] for name in self._STATE_ARRAYS if name in arrays}}
+        self._state_cache[key] = bundle
+        return bundle
 
     def __len__(self) -> int:
         return len(self.refs)
@@ -99,8 +127,9 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         ref = self.refs[index]
-        arrays = HDF5StateSource(ref.record.path).read()
-        view = self._get_observation(ref, arrays)
+        state = self._get_state(ref)
+        view = state["view"]
+        arrays = state["arrays"]
         sl = slice(ref.start, ref.start + ref.length)
         values = view["values"][sl]
         point_coords = view["point_coords"][:, :2]

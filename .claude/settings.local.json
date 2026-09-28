@@ -69,7 +69,10 @@
       "Bash(head -30 DATASET_AUDIT.md)",
       "Read(//e/working/my_project/具体工作/InSAR相关/数据/前海7号/**)",
       "Bash(ls -la \"前海7号桥PS点位数据.xlsx\")",
-      "Bash(md5sum \"前海7号桥PS点位数据.xlsx\" \"前海7号桥PS点位数据/前海7号桥PS点位数据.xlsx\")"
+      "Bash(md5sum \"前海7号桥PS点位数据.xlsx\" \"前海7号桥PS点位数据/前海7号桥PS点位数据.xlsx\")",
+      "Bash(./.venv/Scripts/python.exe -m py_compile qianhai7_training/config.py qianhai7_training/cli/train.py qianhai7_training/training/engine.py)",
+      "Bash(./.venv/Scripts/python.exe *)",
+      "Bash(awk '{print $5, $NF}')"
     ]
   }
 }

@@ -108,7 +108,7 @@ def fit_normalization_stats(refs: list[WindowRef]) -> NormalizationStats:
     for ref in unique.values():
         arrays = HDF5StateSource(ref.record.path).read(cache=False)
         deck = arrays["deck_node_mask"]
-        displacement = arrays["displacement"][:, deck, 2]
+        displacement = arrays["displacement_uz"][:, deck]
         displacement = displacement - displacement[0:1]
         value_stats.update(displacement)
         temperature_stats.update(arrays["temperature_C"])

@@ -45,12 +45,22 @@ class TrainConfig:
     prefetch_factor: int = 2
     persistent_workers: bool = True
     pin_memory: bool = False
+    # Progress output for every training/evaluation loop. "auto" shows a tqdm bar
+    # on a terminal and falls back to one log line per log_every_batches when the
+    # output is redirected. Other modes: "bar", "log", "off".
+    progress: str = "auto"
+    # Log-mode frequency. Capped so short loops still emit about ten lines.
+    log_every_batches: int = 100
 
     def __post_init__(self) -> None:
         if self.num_workers < 0:
             raise ValueError("train.num_workers must be >= 0")
         if self.prefetch_factor < 1:
             raise ValueError("train.prefetch_factor must be >= 1")
+        if self.log_every_batches < 0:
+            raise ValueError("train.log_every_batches must be >= 0")
+        if self.progress not in ("auto", "bar", "log", "off"):
+            raise ValueError("train.progress must be one of: auto, bar, log, off")
         if self.num_workers == 0 and self.persistent_workers:
             object.__setattr__(self, "persistent_workers", False)
 
@@ -85,6 +95,7 @@ def load_experiment_config(
     data_root_override: str | Path | None = None,
     epochs_override: int | None = None,
     batch_size_override: int | None = None,
+    progress_override: str | None = None,
 ) -> ExperimentConfig:
     """Load the YAML experiment contract and apply explicit CLI overrides."""
     try:
@@ -110,9 +121,13 @@ def load_experiment_config(
         raw_train["epochs"] = epochs_override
     if batch_size_override is not None:
         raw_train["batch_size"] = batch_size_override
+    if progress_override is not None:
+        raw_train["progress"] = progress_override
 
     if "data_root" not in raw_data:
         raise ValueError(f"Config {path} is missing data.data_root")
+    if "output_root" in raw_train:
+        raw_train["output_root"] = Path(raw_train["output_root"])
     data = DataConfig(data_root=Path(raw_data.pop("data_root")), **raw_data)
     train = TrainConfig(**raw_train)
     model = ModelConfig(name=model_name, params=model_params)

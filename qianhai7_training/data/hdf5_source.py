@@ -33,7 +33,9 @@ class HDF5StateSource:
                 "node_ids": np.asarray(handle["mesh/node_ids"], dtype=np.int64),
                 "deck_node_mask": np.asarray(handle["mesh/deck_node_mask"], dtype=bool),
                 "deck_element_connectivity": np.asarray(handle["mesh/deck_element_connectivity"], dtype=np.int64),
-                "displacement": np.asarray(handle["responses/fem/disp_at_acquisition"], dtype=np.float32),
+                # Only UZ is ever consumed, and the dataset is chunked along the
+                # component axis, so this slice reads a third of the bytes.
+                "displacement_uz": np.asarray(handle["responses/fem/disp_at_acquisition"][:, :, 2], dtype=np.float32),
                 "temperature_C": np.asarray(handle["environment/temperature_by_acquisition_C"], dtype=np.float32),
                 "delta_days": np.asarray(handle["environment/delta_days"], dtype=np.float32),
                 "state_family_code": np.asarray(handle["labels/state_family_code_by_acquisition"], dtype=np.int64),

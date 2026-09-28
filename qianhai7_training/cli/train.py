@@ -25,6 +25,8 @@ from ..data.windows import make_window_refs, split_by_state
 from ..models.registry import build_model
 from ..training.engine import train_one_epoch
 from ..training.losses import supervised_loss
+from ..training.plots import plot_final_evaluation, plot_training_history, write_history
+from ..training.progress import make_progress
 from ..training.report import Stopwatch, classification_metrics, count_parameters, multiclass_cross_entropy, write_report
 
 
@@ -44,13 +46,14 @@ def make_loader(refs, observation, seed, normalization, batch_size, shuffle=Fals
     return DataLoader(**options)
 
 
-def evaluate_torch(model, loader, device):
+def evaluate_torch(model, loader, device, *, desc=None, progress=None):
     model.eval()
     collected = {key: {"true": [], "prob": []} for key in ("global_severity", "material_active", "settlement_type", "stiffness_reduction", "fine_state_family")}
     loss_sum = 0.0
     sample_count = 0
-    with torch.no_grad():
-        for batch in loader:
+    total_batches = len(loader) if hasattr(loader, "__len__") else None
+    with torch.no_grad(), make_progress(desc, total=total_batches, options=progress) as tracker:
+        for batch_index, batch in enumerate(loader, start=1):
             batch = batch.to(device)
             outputs = model.forward_batch(batch)
             loss_sum += float(supervised_loss(outputs, batch)) * batch.batch_size
@@ -58,6 +61,7 @@ def evaluate_torch(model, loader, device):
             for key in collected:
                 collected[key]["true"].append(batch.targets[key].cpu().numpy())
                 collected[key]["prob"].append(torch.softmax(outputs[key], dim=1).cpu().numpy())
+            tracker.update(batch_index, average_loss=loss_sum / max(sample_count, 1))
     predictions = {}
     for key, items in collected.items():
         y_true = np.concatenate(items["true"])
@@ -86,13 +90,16 @@ def pack_metrics(predictions, losses=None):
     return results
 
 
-def evaluate_xgboost(model, loader):
+def evaluate_xgboost(model, loader, *, desc=None, progress=None):
     features, targets = [], {key: [] for key in ("fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction")}
     from ..models.xgboost_model import fixed_features
-    for batch in loader:
-        features.append(fixed_features(batch))
-        for key in targets:
-            targets[key].append(batch.targets[key].cpu().numpy())
+    total_batches = len(loader) if hasattr(loader, "__len__") else None
+    with make_progress(desc, total=total_batches, options=progress) as tracker:
+        for batch_index, batch in enumerate(loader, start=1):
+            features.append(fixed_features(batch))
+            for key in targets:
+                targets[key].append(batch.targets[key].cpu().numpy())
+            tracker.update(batch_index)
     if not features:
         raise ValueError("Cannot evaluate on an empty split")
     x = np.concatenate(features)
@@ -139,7 +146,7 @@ def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
         "window_length": config.data.window_length,
         "normalization": normalization.__dict__,
         "state_class_values": list(range(getattr(model, "num_classes", 40))),
-        "severity_class_values": list(range(6)),
+        "severity_class_values": list(range(4)),
     }, path)
 
 
@@ -149,21 +156,38 @@ def main() -> None:
     parser.add_argument("--data-root", default=None, help="Optional override for data.data_root")
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument(
+        "--progress",
+        choices=("auto", "bar", "log", "off"),
+        default=None,
+        help="Override train.progress. Use 'bar' to force a tqdm progress bar "
+             "when the output is not a terminal (IDE run windows, pipes).",
+    )
     args = parser.parse_args()
     config = load_experiment_config(
         args.config,
         data_root_override=args.data_root,
         epochs_override=args.epochs,
         batch_size_override=args.batch_size,
+        progress_override=args.progress,
     )
     data = config.data
     train = config.train
+    progress_options = {"mode": train.progress, "log_every": train.log_every_batches}
     run_clock = Stopwatch()
+    stage_started = time.perf_counter()
     index = build_archive_index(data.data_root)
+    print(f"stage=archive_index files={len(index.records)} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
+    stage_started = time.perf_counter()
     refs = make_window_refs(index, data.window_length, data.stride)
+    print(f"stage=window_refs windows={len(refs)} window_length={data.window_length} stride={data.stride} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
+    stage_started = time.perf_counter()
     splits = split_by_state(refs, data.split_seed, data.train_fraction, data.validation_fraction)
+    print(f"stage=split train={len(splits['train'])} validation={len(splits['validation'])} test={len(splits['test'])} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
+    stage_started = time.perf_counter()
     normalization = fit_normalization_stats(splits["train"])
-    normalization_path = Path("runs") / "normalization_stats.json"
+    print(f"stage=normalization states={len(normalization.fitted_state_ids)} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
+    normalization_path = train.output_root / "normalization_stats.json"
     normalization_path.parent.mkdir(parents=True, exist_ok=True)
     normalization.save(normalization_path)
     observation = ObservationConfig(data.virtual_point_count_min, data.virtual_point_count_max, data.noise_std_mm, data.missing_probability)
@@ -176,22 +200,24 @@ def main() -> None:
     loader = make_loader(splits["train"], observation, data.seed, normalization, train.batch_size, shuffle=True, **loader_kwargs)
     validation_loader = make_loader(splits["validation"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
     test_loader = make_loader(splits["test"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
-    print(f"states={len(index.records)} windows={len(refs)} train={len(splits['train'])} validation={len(splits['validation'])} test={len(splits['test'])}")
-    print(f"normalization_stats={normalization_path}")
-    print(f"model={config.model.name} params={config.model.kwargs}")
-    print(f"data_loader=num_workers:{train.num_workers} prefetch_factor:{train.prefetch_factor} persistent_workers:{train.persistent_workers} pin_memory:{train.pin_memory}")
+    print(f"states={len(index.records)} windows={len(refs)} train={len(splits['train'])} validation={len(splits['validation'])} test={len(splits['test'])}", flush=True)
+    print(f"normalization_stats={normalization_path}", flush=True)
+    print(f"model={config.model.name} params={config.model.kwargs}", flush=True)
+    print(f"data_loader=num_workers:{train.num_workers} prefetch_factor:{train.prefetch_factor} persistent_workers:{train.persistent_workers} pin_memory:{train.pin_memory}", flush=True)
     print("stage=model_initialization", flush=True)
     model = build_model(config.model.name, **config.model.kwargs)
     if config.model.name == "xgboost":
-        model.fit_loader(loader)
+        model.fit_loader(loader, desc="xgboost_feature_batches", progress=progress_options)
         weights_dir = train.output_root / "models"
         weights_dir.mkdir(parents=True, exist_ok=True)
         state_path = weights_dir / "xgboost_state.json"
         severity_path = weights_dir / "xgboost_severity.json"
         model.state_model.save_model(state_path)
         model.severity_model.save_model(severity_path)
-        validation_metrics = evaluate_xgboost(model, validation_loader)
-        test_metrics = evaluate_xgboost(model, test_loader)
+        validation_metrics = evaluate_xgboost(model, validation_loader, desc="validation_batches", progress=progress_options)
+        test_metrics = evaluate_xgboost(model, test_loader, desc="test_batches", progress=progress_options)
+        evaluation_plot_path = train.output_root / "final_test_evaluation.png"
+        plot_final_evaluation(test_metrics, evaluation_plot_path)
         total_elapsed = run_clock.elapsed()
         report = {
             "model_name": config.model.name,
@@ -208,6 +234,7 @@ def main() -> None:
                 "global_severity": (model.severity_classes_.tolist() if model.severity_classes_ is not None else []),
             },
             "weights": {"state_model": str(state_path), "severity_model": str(severity_path)},
+            "plots": {"final_test_evaluation": str(evaluation_plot_path)},
             "metrics": {"validation": validation_metrics, "test": test_metrics},
         }
         report_path = train.output_root / "training_report.json"
@@ -216,20 +243,54 @@ def main() -> None:
         return
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
+    parameter_counts = count_parameters(model)
+    gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else "unavailable"
+    print(
+        f"device={device} gpu={gpu_name} total_parameters={parameter_counts['total_parameters']} "
+        f"trainable_parameters={parameter_counts['trainable_parameters']}",
+        flush=True,
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=train.learning_rate, weight_decay=train.weight_decay)
     weights_dir = train.output_root / "models"
     weights_dir.mkdir(parents=True, exist_ok=True)
     epoch_times: list[float] = []
+    history: list[dict[str, object]] = []
+    history_path = train.output_root / "history.json"
     for epoch in range(train.epochs):
         epoch_started = time.perf_counter()
-        loss = train_one_epoch(model, loader, optimizer, device)
+        loss = train_one_epoch(model, loader, optimizer, device, desc=f"train_batches epoch={epoch + 1}", progress=progress_options)
         epoch_elapsed = time.perf_counter() - epoch_started
         epoch_times.append(epoch_elapsed)
-        print(f"epoch={epoch + 1} train_loss={loss:.6f} elapsed_sec={epoch_elapsed:.1f}", flush=True)
+        validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
+        validation_metrics = pack_metrics(validation_predictions)
+        history_row: dict[str, object] = {
+            "epoch": epoch + 1,
+            "train_loss": float(loss),
+            "validation_loss": float(validation_loss),
+            "learning_rate": float(optimizer.param_groups[0]["lr"]),
+        }
+        for task, task_metrics in validation_metrics.items():
+            if task == "combined_loss":
+                continue
+            history_row[f"validation_{task}_f1_macro"] = float(task_metrics["f1_macro"])
+            history_row[f"validation_{task}_accuracy"] = float(task_metrics["accuracy"])
+        history.append(history_row)
+        write_history(history_path, history)
+        print(
+            f"epoch={epoch + 1} train_loss={loss:.6f} validation_loss={validation_loss:.6f} "
+            f"validation_fine_state_f1={validation_metrics['fine_state_family']['f1_macro']:.6f} "
+            f"elapsed_sec={epoch_elapsed:.1f}",
+            flush=True,
+        )
     checkpoint_path = weights_dir / f"{config.model.name}_best.pt"
     save_torch_checkpoint(checkpoint_path, model, optimizer, config, normalization, train.epochs)
-    validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device)
-    test_loss, test_predictions = evaluate_torch(model, test_loader, device)
+    validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
+    test_loss, test_predictions = evaluate_torch(model, test_loader, device, desc="test_batches", progress=progress_options)
+    history_plot_path = train.output_root / "training_history.png"
+    plot_training_history(history, history_plot_path)
+    test_metrics = pack_metrics(test_predictions, test_loss)
+    evaluation_plot_path = train.output_root / "final_test_evaluation.png"
+    plot_final_evaluation(test_metrics, evaluation_plot_path)
     report = {
         "model_name": config.model.name,
         "model_params": config.model.kwargs,
@@ -246,10 +307,15 @@ def main() -> None:
             "train_total_sec": sum(epoch_times),
             "total_process_sec": run_clock.elapsed(),
         },
+        "history": str(history_path),
+        "plots": {
+            "training_history": str(history_plot_path),
+            "final_test_evaluation": str(evaluation_plot_path),
+        },
         "weights": {"checkpoint": str(checkpoint_path)},
         "metrics": {
             "validation": pack_metrics(validation_predictions, validation_loss),
-            "test": pack_metrics(test_predictions, test_loss),
+            "test": test_metrics,
         },
     }
     report_path = train.output_root / "training_report.json"

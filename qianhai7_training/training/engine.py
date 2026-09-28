@@ -2,24 +2,30 @@ from __future__ import annotations
 
 import torch
 import time
+from typing import Any
 
 from ..contracts import WindowBatch
 from .losses import supervised_loss
+from .progress import make_progress
 
 
-def train_one_epoch(model, loader, optimizer, device: torch.device) -> float:
+def train_one_epoch(model, loader, optimizer, device: torch.device, *, desc: str | None = None,
+                    progress: dict[str, Any] | None = None) -> float:
     model.train()
     total = 0.0
     count = 0
-    for batch in loader:
-        assert isinstance(batch, WindowBatch)
-        batch = batch.to(device)
-        optimizer.zero_grad(set_to_none=True)
-        loss = supervised_loss(model.forward_batch(batch), batch)
-        loss.backward()
-        optimizer.step()
-        total += float(loss.detach()) * batch.batch_size
-        count += batch.batch_size
+    total_batches = len(loader) if hasattr(loader, "__len__") else None
+    with make_progress(desc, total=total_batches, options=progress) as tracker:
+        for batch_index, batch in enumerate(loader, start=1):
+            assert isinstance(batch, WindowBatch)
+            batch = batch.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            loss = supervised_loss(model.forward_batch(batch), batch)
+            loss.backward()
+            optimizer.step()
+            total += float(loss.detach()) * batch.batch_size
+            count += batch.batch_size
+            tracker.update(batch_index, average_loss=total / max(count, 1))
     return total / max(count, 1)
 
 
