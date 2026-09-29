@@ -6,7 +6,7 @@ from torch import nn, Tensor
 from ..contracts import WindowBatch
 
 
-def supervised_loss(outputs: dict[str, torch.Tensor], batch: WindowBatch) -> int:
+def supervised_loss(outputs: dict[str, torch.Tensor], batch: WindowBatch) -> Tensor:
     regional_keys = ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness")
     missing_outputs = [key for key in regional_keys if key not in outputs]
     missing_targets = [f"target_{key}" for key in regional_keys if f"target_{key}" not in batch.targets]

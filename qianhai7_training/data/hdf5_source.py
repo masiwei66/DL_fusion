@@ -52,6 +52,9 @@ class HDF5StateSource:
                 if "state/support_settlement_by_acquisition_mm" in handle else np.zeros((0, 0), dtype=np.float32),
                 "support_settlement_ratio": np.asarray(handle["labels/support_settlement_ratio_to_limit_by_acquisition"], dtype=np.float32)
                 if "labels/support_settlement_ratio_to_limit_by_acquisition" in handle else np.zeros((0, 0), dtype=np.float32),
+                # Per-period normative limit, needed to build per-support ratios.
+                "support_settlement_limit_mm": np.asarray(handle["labels/support_settlement_limit_by_acquisition_mm"], dtype=np.float32)
+                if "labels/support_settlement_limit_by_acquisition_mm" in handle else np.zeros(0, dtype=np.float32),
                 "material_severity": np.asarray(handle["labels/material_severity_by_material"], dtype=np.float32)
                 if "labels/material_severity_by_material" in handle else np.zeros(0, dtype=np.float32),
                 "material_ids": np.asarray(handle["state/material_ids"], dtype=np.int64)

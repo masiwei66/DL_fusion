@@ -22,6 +22,8 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
     # Everything a window needs from a state other than the observation view. The
     # displacement field is deliberately absent: it only feeds the observation, so
     # keeping it would defeat the cache with a multi-megabyte read per window.
+    # Must cover every key `regional_targets` reads: a missing key would be
+    # silently replaced by `.get` defaults and turn all four targets into zeros.
     _STATE_ARRAYS = (
         "temperature_C",
         "delta_days",
@@ -29,8 +31,14 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         "support_active_by_acquisition_by_group",
         "support_settlement_mm",
         "support_settlement_ratio",
+        "support_settlement_limit_mm",
         "local_deck_settlement_mm",
         "modal_frequencies",
+        "material_ids",
+        "material_scale_by_material",
+        "support_group_names",
+        "support_trans_scale_by_group",
+        "support_rot_scale_by_group",
     )
 
     def __init__(
