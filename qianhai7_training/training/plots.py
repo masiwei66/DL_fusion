@@ -25,7 +25,7 @@ def plot_training_history(history: list[dict[str, Any]], save_path: str | Path) 
     if plt is None:
         return False
     epochs = [row["epoch"] for row in history]
-    tasks = ["fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction"]
+    tasks = ["deck_material", "pier_settlement", "pier_material", "bearing_stiffness"]
     fig, axes = plt.subplots(1, 2, figsize=(14, 5.2))
     axes[0].plot(epochs, [row["train_loss"] for row in history], label="train loss")
     axes[0].plot(epochs, [row["validation_loss"] for row in history], label="validation loss")
@@ -36,7 +36,7 @@ def plot_training_history(history: list[dict[str, Any]], save_path: str | Path) 
     axes[0].legend()
     for task in tasks:
         key = f"validation_{task}_f1_macro"
-        axes[1].plot(epochs, [row[key] for row in history], label=task)
+        axes[1].plot(epochs, [row.get(key, 0.0) for row in history], label=task)
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Macro F1")
     axes[1].set_ylim(0.0, 1.0)
@@ -55,7 +55,7 @@ def plot_final_evaluation(metrics: dict[str, Any], save_path: str | Path) -> boo
     plt = _load_matplotlib()
     if plt is None:
         return False
-    tasks = [task for task in ("fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction") if task in metrics]
+    tasks = [task for task in ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness") if task in metrics]
     if not tasks:
         return False
     columns = 3
@@ -64,21 +64,18 @@ def plot_final_evaluation(metrics: dict[str, Any], save_path: str | Path) -> boo
     for index, task in enumerate(tasks):
         metric = metrics[task]
         ax = axes[index // columns][index % columns]
-        matrix = metric.get("confusion_matrix", [])
-        image = ax.imshow(matrix, cmap="Blues", aspect="auto")
-        roc_auc = metric.get("roc_auc")
-        roc_text = "n/a" if roc_auc is None else f"{roc_auc:.3f}"
-        ax.set_title(f"{task}\nF1={metric.get('f1_macro', float('nan')):.3f}, AUC={roc_text}")
-        ax.set_xlabel("Predicted class")
-        ax.set_ylabel("True class")
-        ax.set_xticks(range(len(matrix)))
-        ax.set_yticks(range(len(matrix)))
-        # Cell annotations stop being legible once the vocabulary is large.
-        if len(matrix) <= 12:
-            for row_index, row in enumerate(matrix):
-                for col_index, value in enumerate(row):
-                    ax.text(col_index, row_index, str(value), ha="center", va="center", fontsize=7)
-        fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+        f1 = metric.get("macro_f1", float("nan"))
+        values = metric.get("f1_per_output", [])
+        if values:
+            ax.bar(range(len(values)), values, color="#2f6f9f")
+            ax.set_ylim(0.0, 1.0)
+            ax.set_xticks(range(len(values)))
+            ax.set_xlabel("Output index")
+            ax.set_ylabel("F1")
+        else:
+            ax.text(0.5, 0.5, "No metric values", ha="center", va="center")
+            ax.set_axis_off()
+        ax.set_title(f"{task}\nMacro F1={f1:.3f}")
     for index in range(len(tasks), rows * columns):
         axes[index // columns][index % columns].axis("off")
     fig.suptitle("Final test-set evaluation", y=1.02)

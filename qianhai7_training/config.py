@@ -30,14 +30,35 @@ class DataConfig:
     split_seed: int = 20260924
     train_fraction: float = 0.7
     validation_fraction: float = 0.15
-    # Stratify the state-level split by state_family_id so every mechanism family
-    # reaches the training split. False restores the plain random shuffle.
+    # Stratify the state-level split by state_family_id to preserve mechanism coverage.
     split_stratify: bool = True
     # Number of cached virtual-observation realizations rotated one per epoch.
     # 1 means a single deterministic realization (no augmentation).
     observation_realizations: int = 1
     noise_scan_std_mm: tuple[float, ...] = (0.0, 0.1, 0.2, 0.4)
     missing_scan_probability: tuple[float, ...] = (0.0, 0.05, 0.1, 0.2)
+
+
+@dataclass(frozen=True)
+class RegionalTargetConfig:
+    """Engineering targets derived from the immutable FEM state parameters."""
+
+    target_schema: str = "regional_anomaly_v1"
+    target_version: str = "v1"
+    label_mode: str = "engineering_anomaly"
+    material_scale_threshold: float = 0.90
+    bearing_scale_threshold: float = 0.90
+    settlement_ratio_threshold: float = 0.05
+
+    def __post_init__(self) -> None:
+        if self.label_mode not in ("physical_active", "engineering_anomaly"):
+            raise ValueError("regional_targets.label_mode must be physical_active or engineering_anomaly")
+        for name in ("material_scale_threshold", "bearing_scale_threshold"):
+            value = float(getattr(self, name))
+            if not 0.0 < value <= 1.0:
+                raise ValueError(f"regional_targets.{name} must be in (0, 1]")
+        if float(self.settlement_ratio_threshold) < 0.0:
+            raise ValueError("regional_targets.settlement_ratio_threshold must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -62,7 +83,7 @@ class TrainConfig:
     log_every_batches: int = 100
     # Tasks averaged into the best-checkpoint score. Tasks differ by orders of
     # magnitude in difficulty, so the default is the primary task alone.
-    selection_tasks: tuple[str, ...] = ("fine_state_family",)
+    selection_tasks: tuple[str, ...] = ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness")
     # Stop once the selection score has not improved for this many epochs; 0 disables.
     early_stopping_patience: int = 10
 
@@ -94,6 +115,8 @@ class ModelConfig:
         if self.name not in ("mlp", *SUPPORTED_MODEL_NAMES):
             choices = ", ".join(("mlp", *SUPPORTED_MODEL_NAMES))
             raise ValueError(f"Unknown model {self.name!r}; choose one of: {choices}")
+        if self.name == "xgboost":
+            raise ValueError("xgboost is not supported by regional_anomaly_v1")
 
     @property
     def kwargs(self) -> dict[str, Any]:
@@ -105,6 +128,7 @@ class ExperimentConfig:
     data: DataConfig
     train: TrainConfig
     model: ModelConfig
+    regional_targets: RegionalTargetConfig = RegionalTargetConfig()
 
 
 def load_experiment_config(
@@ -125,6 +149,7 @@ def load_experiment_config(
     raw_data = dict(payload.get("data") or {})
     raw_train = dict(payload.get("train") or {})
     raw_model = dict(payload.get("model") or {})
+    raw_targets = dict(payload.get("regional_targets") or {})
 
     # Keep the existing train.model_name format valid while allowing the clearer
     # model.name/model.params format for new experiments.
@@ -149,4 +174,5 @@ def load_experiment_config(
     data = DataConfig(data_root=Path(raw_data.pop("data_root")), **raw_data)
     train = TrainConfig(**raw_train)
     model = ModelConfig(name=model_name, params=model_params)
-    return ExperimentConfig(data=data, train=train, model=model)
+    regional_targets = RegionalTargetConfig(**raw_targets)
+    return ExperimentConfig(data=data, train=train, model=model, regional_targets=regional_targets)

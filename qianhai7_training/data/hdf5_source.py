@@ -54,6 +54,18 @@ class HDF5StateSource:
                 if "labels/support_settlement_ratio_to_limit_by_acquisition" in handle else np.zeros((0, 0), dtype=np.float32),
                 "material_severity": np.asarray(handle["labels/material_severity_by_material"], dtype=np.float32)
                 if "labels/material_severity_by_material" in handle else np.zeros(0, dtype=np.float32),
+                "material_ids": np.asarray(handle["state/material_ids"], dtype=np.int64)
+                if "state/material_ids" in handle else np.asarray([], dtype=np.int64),
+                "material_scale_by_material": np.asarray(handle["state/material_scale_by_material"], dtype=np.float32)
+                if "state/material_scale_by_material" in handle else np.asarray([], dtype=np.float32),
+                "support_group_names": np.asarray(handle["mesh/support_group_names"]).astype(str)
+                if "mesh/support_group_names" in handle else np.asarray([], dtype=str),
+                "bearing_group_names": np.asarray(handle["state/support_stiffness_group_ids"], dtype=np.int64)
+                if "state/support_stiffness_group_ids" in handle else np.arange(1, 9, dtype=np.int64),
+                "support_trans_scale_by_group": np.asarray(handle["state/support_trans_scale_by_group"], dtype=np.float32)
+                if "state/support_trans_scale_by_group" in handle else np.ones(8, dtype=np.float32),
+                "support_rot_scale_by_group": np.asarray(handle["state/support_rot_scale_by_group"], dtype=np.float32)
+                if "state/support_rot_scale_by_group" in handle else np.ones(8, dtype=np.float32),
                 "local_deck_settlement_mm": np.asarray(handle["state/local_deck_settlement_by_acquisition_mm"], dtype=np.float32)
                 if "state/local_deck_settlement_by_acquisition_mm" in handle else np.zeros((0, 0), dtype=np.float32),
                 "global_severity_value": np.asarray(handle["labels/support_settlement_ratio_to_limit_by_acquisition"], dtype=np.float32)

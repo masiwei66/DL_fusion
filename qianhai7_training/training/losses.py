@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import torch
-from torch import nn
+from torch import nn, Tensor
 
 from ..contracts import WindowBatch
 
 
-def supervised_loss(outputs: dict[str, torch.Tensor], batch: WindowBatch) -> torch.Tensor:
-    return (
-        nn.functional.cross_entropy(outputs["fine_state_family"], batch.targets["fine_state_family"])
-        + nn.functional.cross_entropy(outputs["global_severity"], batch.targets["global_severity"])
-        + 0.5 * nn.functional.cross_entropy(outputs["material_active"], batch.targets["material_active"])
-        + 0.5 * nn.functional.cross_entropy(outputs["settlement_type"], batch.targets["settlement_type"])
-        + 0.5 * nn.functional.cross_entropy(outputs["stiffness_reduction"], batch.targets["stiffness_reduction"])
+def supervised_loss(outputs: dict[str, torch.Tensor], batch: WindowBatch) -> int:
+    regional_keys = ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness")
+    missing_outputs = [key for key in regional_keys if key not in outputs]
+    missing_targets = [f"target_{key}" for key in regional_keys if f"target_{key}" not in batch.targets]
+    if missing_outputs or missing_targets:
+        raise KeyError(f"regional target contract incomplete: outputs={missing_outputs}, targets={missing_targets}")
+    return sum(
+        nn.functional.binary_cross_entropy_with_logits(outputs[key], batch.targets[f"target_{key}"].float())
+        for key in regional_keys
     )

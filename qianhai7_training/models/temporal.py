@@ -34,31 +34,28 @@ def temporal_features(batch: WindowBatch) -> torch.Tensor:
 
 
 class TemporalHead(nn.Module):
-    def __init__(self, input_dim: int, representation_dim: int, num_classes: int, severity_classes: int,
-                 settlement_classes: int = 6):
+    def __init__(self, input_dim: int, representation_dim: int, regional_targets: bool = True):
         super().__init__()
-        self.state_head = nn.Linear(representation_dim, num_classes)
-        self.severity_head = nn.Linear(representation_dim, severity_classes)
-        self.material_head = nn.Linear(representation_dim, 2)
-        self.settlement_head = nn.Linear(representation_dim, settlement_classes)
-        self.stiffness_head = nn.Linear(representation_dim, 2)
+        if not regional_targets:
+            raise ValueError("regional_targets must be enabled; legacy classification heads are removed")
+        self.deck_material_regional_head = nn.Linear(representation_dim, 3)
+        self.pier_settlement_regional_head = nn.Linear(representation_dim, 3)
+        self.pier_material_regional_head = nn.Linear(representation_dim, 3)
+        self.bearing_stiffness_regional_head = nn.Linear(representation_dim, 8)
 
     def outputs(self, representation: torch.Tensor) -> dict[str, torch.Tensor]:
         return {
             "representation": representation,
-            "state_family": self.state_head(representation),
-            "global_severity": self.severity_head(representation),
-            "fine_state_family": self.state_head(representation),
-            "material_active": self.material_head(representation),
-            "settlement_type": self.settlement_head(representation),
-            "stiffness_reduction": self.stiffness_head(representation),
+            "deck_material": self.deck_material_regional_head(representation),
+            "pier_settlement": self.pier_settlement_regional_head(representation),
+            "pier_material": self.pier_material_regional_head(representation),
+            "bearing_stiffness": self.bearing_stiffness_regional_head(representation),
         }
 
 
 class LSTMModel(StudentModel):
     def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
-                 dropout: float = 0.1, bidirectional: bool = False, num_classes: int = 40,
-                 severity_classes: int = 4, settlement_classes: int = 6):
+                 dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True):
         super().__init__()
         self.input_dim = input_dim
         self.encoder = nn.LSTM(
@@ -67,7 +64,7 @@ class LSTMModel(StudentModel):
             bidirectional=bidirectional,
         )
         output_dim = hidden_size * (2 if bidirectional else 1)
-        self.head = TemporalHead(input_dim, output_dim, num_classes, severity_classes, settlement_classes)
+        self.head = TemporalHead(input_dim, output_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
         sequence = temporal_features(batch)
@@ -90,9 +87,7 @@ class ResNet50_1DModel(StudentModel):
         self,
         input_dim: int = 9,
         base_width: int = 32,
-        num_classes: int = 40,
-        severity_classes: int = 4,
-        settlement_classes: int = 6,
+        regional_targets: bool = True,
         layers: tuple[int, int, int, int] = (3, 4, 6, 3),
         stage_strides: tuple[int, int, int, int] = (1, 1, 1, 1),
     ):
@@ -124,13 +119,7 @@ class ResNet50_1DModel(StudentModel):
         self.stages = nn.Sequential(*blocks)
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.representation_dim = channels
-        self.head = TemporalHead(
-            self.input_dim,
-            self.representation_dim,
-            num_classes,
-            severity_classes,
-            settlement_classes,
-        )
+        self.head = TemporalHead(self.input_dim, self.representation_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
         sequence = temporal_features(batch).transpose(1, 2)

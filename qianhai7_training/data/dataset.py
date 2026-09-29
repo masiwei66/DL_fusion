@@ -10,6 +10,7 @@ from ..contracts import WindowBatch
 from .hdf5_source import HDF5StateSource
 from .normalization import NormalizationStats
 from .observation import ObservationConfig, sample_virtual_observation
+from .regional_targets import regional_targets
 from .windows import WindowRef
 
 # Large enough to dominate `sum(ord(char) for char in state_id)`, so that
@@ -24,17 +25,11 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
     _STATE_ARRAYS = (
         "temperature_C",
         "delta_days",
-        "state_family_code",
-        "global_severity",
-        "material_active_by_acquisition",
         "support_active_by_acquisition",
         "support_active_by_acquisition_by_group",
-        "support_stiffness_active_by_acquisition",
-        "local_deck_active_by_acquisition",
         "support_settlement_mm",
         "support_settlement_ratio",
         "local_deck_settlement_mm",
-        "material_severity",
         "modal_frequencies",
     )
 
@@ -42,15 +37,19 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         self,
         refs: list[WindowRef],
         observation: ObservationConfig,
-        seed: int = 42,
-        normalization: NormalizationStats | None = None,
-        realizations: int = 1,
+        seed: int,
+        normalization: NormalizationStats | None,
+        realizations: int,
+        regional_target_config,
     ):
         self.refs = refs
         self.observation = observation
         self.seed = seed
         self.normalization = normalization
         self.realizations = max(int(realizations), 1)
+        if regional_target_config is None:
+            raise ValueError("regional_target_config is required for regional_anomaly_v1")
+        self.regional_target_config = regional_target_config
         self._state_cache: dict[tuple[str, int], dict[str, Any]] = {}
 
     def _realization_seed(self, state_id: str, realization: int) -> int:
@@ -101,39 +100,7 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
                 return np.asarray([], dtype=bool)
             return np.asarray(value[index], dtype=bool).reshape(-1)
 
-        material = step_bool("material_active_by_acquisition")
-        if material.size == 0:
-            severity = np.asarray(arrays.get("material_severity", np.asarray([])), dtype=np.float32)
-            material_active = int(severity.size > 0 and np.nanmax(severity) > 0)
-        else:
-            material_active = int(material.any())
-
-        support = step_bool("support_active_by_acquisition")
-        by_group = step_bool("support_active_by_acquisition_by_group")
-        if by_group.size:
-            support = by_group
-        local = step_bool("local_deck_active_by_acquisition")
-        stiffness = step_bool("support_stiffness_active_by_acquisition")
-        stiffness_reduction = int(stiffness.any())
-        active_indices = np.flatnonzero(support)
-        if local.any():
-            settlement_type = 5
-        elif active_indices.size == 0:
-            settlement_type = 0
-        elif active_indices.size == 1:
-            settlement_type = 1
-        elif active_indices.size > 1:
-            values = np.asarray(arrays.get("support_settlement_mm", np.asarray([])), dtype=np.float32)
-            step_values = values[index].reshape(-1) if values.ndim >= 2 and values.shape[0] > index else np.zeros(0)
-            active_values = step_values[active_indices] if step_values.size > active_indices.max(initial=-1) else np.zeros(0)
-            settlement_type = 3 if active_values.size > 1 and not np.allclose(active_values, active_values[0]) else 2
-        else:
-            settlement_type = 0
-        return {
-            "material_active": material_active,
-            "settlement_type": int(settlement_type),
-            "stiffness_reduction": stiffness_reduction,
-        }
+        return {}
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         window_count = len(self.refs)
@@ -161,9 +128,7 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         support_ratio = self._at_step(arrays["support_settlement_ratio"], ref.target_index, np.zeros(0, dtype=np.float32))
         local_deck = self._at_step(arrays["local_deck_settlement_mm"], ref.target_index, np.zeros(0, dtype=np.float32))
         mechanisms = self._mechanism_targets(arrays, ref.target_index)
-        ratio_value = float(np.nanmax(np.asarray(support_ratio, dtype=np.float32))) if np.asarray(support_ratio).size else 0.0
-        material = np.asarray(arrays["material_severity"], dtype=np.float32)
-        material_value = float(np.nanmax(material)) if material.size else 0.0
+        regional = regional_targets(arrays, ref.target_index, self.regional_target_config)
         return {
             "values": values,
             "valid_mask": valid_mask,
@@ -175,14 +140,10 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
             "temperature_valid_mask": temperature_valid_mask,
             "delta_days_valid_mask": delta_days_valid_mask,
             "delta_days": delta_days,
-            "target_state_family": arrays["state_family_code"][ref.target_index],
-            "target_fine_state_family": arrays["state_family_code"][ref.target_index],
-            "target_global_severity": arrays["global_severity"][ref.target_index],
             **{f"target_{key}": value for key, value in mechanisms.items()},
-            "target_global_severity_value": ratio_value,
+            **{f"target_{key}": value for key, value in regional.items()},
             "target_support_settlement_mm": np.asarray(support_mm, dtype=np.float32),
             "target_support_settlement_ratio": np.asarray(support_ratio, dtype=np.float32),
-            "target_material_severity": material_value,
             "target_local_deck_settlement_mm": np.asarray(local_deck, dtype=np.float32),
             "metadata": {
                 "sample_id": ref.record.sample_id,
@@ -242,20 +203,21 @@ def collate_window_batches(items: list[dict[str, Any]]) -> WindowBatch:
         temperature_valid_mask=torch.from_numpy(np.stack([item["temperature_valid_mask"][:, None] for item in items])).bool(),
         teacher_features={"modal_frequencies": torch.nn.utils.rnn.pad_sequence([torch.from_numpy(np.asarray(item["teacher_features"]["modal_frequencies"], dtype=np.float32)) for item in items], batch_first=True)},
         targets={
-            "fine_state_family": torch.tensor([item["target_fine_state_family"] for item in items], dtype=torch.long),
-            "state_family": torch.tensor([item["target_fine_state_family"] for item in items], dtype=torch.long),
-            "global_severity": torch.tensor([item["target_global_severity"] for item in items], dtype=torch.long),
-            "material_active": torch.tensor([item["target_material_active"] for item in items], dtype=torch.long),
-            "settlement_type": torch.tensor([item["target_settlement_type"] for item in items], dtype=torch.long),
-            "stiffness_reduction": torch.tensor([item["target_stiffness_reduction"] for item in items], dtype=torch.long),
-            "global_severity_value": torch.tensor([item["target_global_severity_value"] for item in items], dtype=torch.float32),
             "support_settlement_mm": support_mm,
             "support_settlement_mm_valid": support_mm_valid,
             "support_settlement_ratio": support_ratio,
             "support_settlement_ratio_valid": support_ratio_valid,
-            "material_severity": torch.tensor([item["target_material_severity"] for item in items], dtype=torch.float32),
             "local_deck_settlement_mm": local_deck,
             "local_deck_settlement_mm_valid": local_deck_valid,
+            **{
+                key: torch.from_numpy(np.stack([np.asarray(item[key], dtype=np.float32) for item in items]))
+                for key in (
+                    "target_deck_material", "target_pier_settlement", "target_pier_material", "target_bearing_stiffness",
+                    "target_physical_deck_material", "target_physical_pier_settlement", "target_physical_pier_material", "target_physical_bearing_stiffness",
+                    "target_engineering_deck_material", "target_engineering_pier_settlement", "target_engineering_pier_material", "target_engineering_bearing_stiffness",
+                )
+                if key in items[0]
+            },
         },
         metadata=[item["metadata"] for item in items],
     )

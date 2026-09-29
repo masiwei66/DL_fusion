@@ -29,7 +29,7 @@ from ..training.engine import train_one_epoch
 from ..training.losses import supervised_loss
 from ..training.plots import plot_final_evaluation, plot_training_history, write_history
 from ..training.progress import make_progress
-from ..training.report import Stopwatch, classification_metrics, count_parameters, multiclass_cross_entropy, write_report
+from ..training.report import Stopwatch, count_parameters, write_report
 
 
 def describe_run(data, splits, eval_splits, eval_stride, realizations, distribution) -> dict[str, Any]:
@@ -59,14 +59,16 @@ def describe_run(data, splits, eval_splits, eval_stride, realizations, distribut
 
 
 def make_loader(refs, observation, seed, normalization, batch_size, shuffle=False, *, num_workers=0,
-                prefetch_factor=2, persistent_workers=False, pin_memory=False, realizations=1, sampler=None):
+                prefetch_factor=2, persistent_workers=False, pin_memory=False, realizations=1, sampler=None,
+                regional_target_config=None):
     if realizations > 1 and sampler is None:
         raise ValueError(
             "realizations > 1 requires a RotatingRealizationSampler; sequential iteration "
             "would put the same window in a batch once per realization"
         )
     options = dict(
-        dataset=QianhaiWindowDataset(refs, observation, seed, normalization, realizations=realizations),
+        dataset=QianhaiWindowDataset(refs, observation, seed, normalization, realizations=realizations,
+                                     regional_target_config=regional_target_config),
         batch_size=batch_size,
         collate_fn=collate_window_batches,
         num_workers=num_workers,
@@ -85,7 +87,8 @@ def make_loader(refs, observation, seed, normalization, batch_size, shuffle=Fals
 
 def evaluate_torch(model, loader, device, *, desc=None, progress=None):
     model.eval()
-    collected = {key: {"true": [], "prob": []} for key in ("global_severity", "material_active", "settlement_type", "stiffness_reduction", "fine_state_family")}
+    regional_keys = ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness")
+    collected = {key: {"true": [], "prob": []} for key in regional_keys}
     loss_sum = 0.0
     sample_count = 0
     total_batches = len(loader) if hasattr(loader, "__len__") else None
@@ -96,14 +99,14 @@ def evaluate_torch(model, loader, device, *, desc=None, progress=None):
             loss_sum += float(supervised_loss(outputs, batch)) * batch.batch_size
             sample_count += batch.batch_size
             for key in collected:
-                collected[key]["true"].append(batch.targets[key].cpu().numpy())
-                collected[key]["prob"].append(torch.softmax(outputs[key], dim=1).cpu().numpy())
+                collected[key]["true"].append(batch.targets[f"target_{key}"].cpu().numpy())
+                collected[key]["prob"].append(torch.sigmoid(outputs[key]).cpu().numpy())
             tracker.update(batch_index, average_loss=loss_sum / max(sample_count, 1))
     predictions = {}
     for key, items in collected.items():
         y_true = np.concatenate(items["true"])
         y_prob = np.concatenate(items["prob"])
-        y_pred = y_prob.argmax(axis=1)
+        y_pred = (y_prob >= 0.5).astype(np.int64)
         predictions[key] = {
             "y_true": y_true,
             "y_pred": y_pred,
@@ -116,61 +119,22 @@ def evaluate_torch(model, loader, device, *, desc=None, progress=None):
 def pack_metrics(predictions, losses=None):
     results = {}
     for key, values in predictions.items():
-        results[key] = classification_metrics(
-            values["y_true"], values["y_pred"], values["y_prob"], values["class_values"]
-        )
-        results[key]["cross_entropy"] = multiclass_cross_entropy(
-            values["y_true"], values["y_prob"], values["class_values"]
-        )
+        results[key] = {"output_count": int(values["y_true"].shape[1]), "threshold": 0.5}
+        results[key]["accuracy_per_output"] = (values["y_true"] == values["y_pred"]).mean(axis=0).tolist()
+        results[key]["precision_per_output"] = []
+        results[key]["recall_per_output"] = []
+        results[key]["f1_per_output"] = []
+        from sklearn.metrics import f1_score, precision_score, recall_score
+        for column in range(values["y_true"].shape[1]):
+            true = values["y_true"][:, column]
+            pred = values["y_pred"][:, column]
+            results[key]["precision_per_output"].append(float(precision_score(true, pred, zero_division=0)))
+            results[key]["recall_per_output"].append(float(recall_score(true, pred, zero_division=0)))
+            results[key]["f1_per_output"].append(float(f1_score(true, pred, zero_division=0)))
+        results[key]["macro_f1"] = float(np.mean(results[key]["f1_per_output"]))
     if losses is not None:
         results["combined_loss"] = float(losses)
     return results
-
-
-def evaluate_xgboost(model, loader, *, desc=None, progress=None):
-    features, targets = [], {key: [] for key in ("fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction")}
-    from ..models.xgboost_model import fixed_features
-    total_batches = len(loader) if hasattr(loader, "__len__") else None
-    with make_progress(desc, total=total_batches, options=progress) as tracker:
-        for batch_index, batch in enumerate(loader, start=1):
-            features.append(fixed_features(batch))
-            for key in targets:
-                targets[key].append(batch.targets[key].cpu().numpy())
-            tracker.update(batch_index)
-    if not features:
-        raise ValueError("Cannot evaluate on an empty split")
-    x = np.concatenate(features)
-    labels = {key: np.concatenate(values) for key, values in targets.items()}
-    task_predictions = model.evaluate_arrays(x, labels["fine_state_family"], labels["global_severity"], "evaluation")
-    for key in ("material_active", "settlement_type", "stiffness_reduction"):
-        model_attr = {"material_active": "material", "settlement_type": "settlement", "stiffness_reduction": "stiffness"}[key]
-        estimator = getattr(model, f"{model_attr}_model")
-        classes = getattr(model, f"{model_attr}_classes_")
-        local_pred = estimator.predict(x).astype(np.int64)
-        if local_pred.ndim > 1:
-            local_pred = local_pred.reshape(local_pred.shape[0], -1).argmax(axis=1)
-        probabilities = estimator.predict_proba(x)
-        # Some XGBoost/sklearn versions return a single-column probability for
-        # a binary classifier; normalize it to a 2-column multiclass matrix.
-        if probabilities.ndim == 1:
-            probabilities = np.column_stack([1.0 - probabilities, probabilities])
-        elif probabilities.shape[1] == 1 and len(classes) == 2:
-            probabilities = np.column_stack([1.0 - probabilities[:, 0], probabilities[:, 0]])
-        task_predictions[key] = {"y_true": labels[key].reshape(-1), "y_pred": classes[local_pred].reshape(-1), "y_prob": probabilities, "class_values": np.asarray(classes).reshape(-1)}
-    metrics = {}
-    for key, values in task_predictions.items():
-        unsupported = sorted(set(map(int, np.unique(values["y_true"]))) - set(map(int, values["class_values"])))
-        task_metrics = classification_metrics(values["y_true"], values["y_pred"], values["y_prob"], values["class_values"])
-        task_metrics["cross_entropy"] = multiclass_cross_entropy(values["y_true"], values["y_prob"], values["class_values"])
-        task_metrics["unsupported_true_class_values"] = unsupported
-        metrics[key] = task_metrics
-    # evaluate_arrays names the fine-grained task state_family for backwards
-    # compatibility; expose the new public name in the report as well.
-    if "state_family" in metrics:
-        metrics["fine_state_family"] = metrics.pop("state_family")
-    losses = [metrics[key]["cross_entropy"] for key in ("fine_state_family", "global_severity", "material_active", "settlement_type", "stiffness_reduction")]
-    metrics["combined_loss"] = sum(losses) if all(value is not None for value in losses) else None
-    return metrics
 
 
 def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
@@ -182,8 +146,8 @@ def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
         "epoch": epoch,
         "window_length": config.data.window_length,
         "normalization": normalization.__dict__,
-        "state_class_values": list(range(getattr(model, "num_classes", 40))),
-        "severity_class_values": list(range(4)),
+        "target_schema": config.regional_targets.target_schema,
+        "target_version": config.regional_targets.target_version,
     }, path)
 
 
@@ -254,11 +218,14 @@ def main() -> None:
     # randomness model construction consumed first.
     train_sampler = RotatingRealizationSampler(len(splits["train"]), realizations, seed=data.split_seed)
     loader = make_loader(splits["train"], observation, data.seed, normalization, train.batch_size,
-                         realizations=realizations, sampler=train_sampler, **loader_kwargs)
+                         realizations=realizations, sampler=train_sampler,
+                         regional_target_config=config.regional_targets, **loader_kwargs)
     # Evaluation stays on a single deterministic realization so metrics are
     # comparable across epochs and runs.
-    validation_loader = make_loader(eval_splits["validation"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
-    test_loader = make_loader(eval_splits["test"], observation, data.seed, normalization, train.batch_size, **loader_kwargs)
+    validation_loader = make_loader(eval_splits["validation"], observation, data.seed, normalization, train.batch_size,
+                                    regional_target_config=config.regional_targets, **loader_kwargs)
+    test_loader = make_loader(eval_splits["test"], observation, data.seed, normalization, train.batch_size,
+                              regional_target_config=config.regional_targets, **loader_kwargs)
     if realizations > 1:
         per_worker_mib = distribution["train"]["unique_states"] * realizations * 25 / 1024
         print(
@@ -273,41 +240,7 @@ def main() -> None:
     print("stage=model_initialization", flush=True)
     model = build_model(config.model.name, **config.model.kwargs)
     if config.model.name == "xgboost":
-        model.fit_loader(loader, desc="xgboost_feature_batches", progress=progress_options)
-        weights_dir = train.output_root / "models"
-        weights_dir.mkdir(parents=True, exist_ok=True)
-        state_path = weights_dir / "xgboost_state.json"
-        severity_path = weights_dir / "xgboost_severity.json"
-        model.state_model.save_model(state_path)
-        model.severity_model.save_model(severity_path)
-        validation_metrics = evaluate_xgboost(model, validation_loader, desc="validation_batches", progress=progress_options)
-        test_metrics = evaluate_xgboost(model, test_loader, desc="test_batches", progress=progress_options)
-        evaluation_plot_path = train.output_root / "final_test_evaluation.png"
-        plot_final_evaluation(test_metrics, evaluation_plot_path)
-        total_elapsed = run_clock.elapsed()
-        report = {
-            "model_name": config.model.name,
-            "model_params": config.model.kwargs,
-            "data_root": str(data.data_root),
-            "window_length": data.window_length,
-            "batch_size": train.batch_size,
-            "states": len(index.records),
-            "windows": len(refs),
-            "train_windows": len(splits["train"]),
-            "data": describe_run(data, splits, eval_splits, eval_stride, realizations, distribution),
-            "timing_sec": {**(model.timing or {}), "total_process_sec": total_elapsed},
-            "class_mappings": {
-                "state_family": (model.state_classes_.tolist() if model.state_classes_ is not None else []),
-                "global_severity": (model.severity_classes_.tolist() if model.severity_classes_ is not None else []),
-            },
-            "weights": {"state_model": str(state_path), "severity_model": str(severity_path)},
-            "plots": {"final_test_evaluation": str(evaluation_plot_path)},
-            "metrics": {"validation": validation_metrics, "test": test_metrics},
-        }
-        report_path = train.output_root / "training_report.json"
-        write_report(report_path, report)
-        print(f"xgboost_fit=complete elapsed_sec={total_elapsed:.1f} report={report_path}", flush=True)
-        return
+        raise ValueError("xgboost is not supported by regional_anomaly_v1; use a regional neural model")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     parameter_counts = count_parameters(model)
@@ -337,7 +270,9 @@ def main() -> None:
         epoch_times.append(epoch_elapsed)
         validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
         validation_metrics = pack_metrics(validation_predictions)
-        selection_score = float(np.mean([validation_metrics[key]["f1_macro"] for key in selection_tasks]))
+        selection_score = float(np.mean([
+            validation_metrics[key]["macro_f1"] for key in selection_tasks
+        ]))
         history_row: dict[str, object] = {
             "epoch": epoch + 1,
             "train_loss": float(loss),
@@ -348,8 +283,7 @@ def main() -> None:
         for task, task_metrics in validation_metrics.items():
             if task == "combined_loss":
                 continue
-            history_row[f"validation_{task}_f1_macro"] = float(task_metrics["f1_macro"])
-            history_row[f"validation_{task}_accuracy"] = float(task_metrics["accuracy"])
+            history_row[f"validation_{task}_macro_f1"] = float(task_metrics["macro_f1"])
         history.append(history_row)
         write_history(history_path, history)
         if selection_score > best_score:
@@ -361,7 +295,7 @@ def main() -> None:
             epochs_without_improvement += 1
         print(
             f"epoch={epoch + 1} train_loss={loss:.6f} validation_loss={validation_loss:.6f} "
-            f"validation_fine_state_f1={validation_metrics['fine_state_family']['f1_macro']:.6f} "
+            f"validation_regional_macro_f1={selection_score:.6f} "
             f"selection_score={selection_score:.6f} elapsed_sec={epoch_elapsed:.1f}",
             flush=True,
         )
