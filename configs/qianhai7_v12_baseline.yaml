@@ -26,16 +26,18 @@ train:
   persistent_workers: true
   # Faster host->GPU copies. On a CPU-only torch build this is ignored (warning at most).
   pin_memory: true
+
 model:
   # Change this name to switch the experiment after the corresponding model is implemented.
   # choices: mlp, xgboost, resnet50_1d, resnet1d, lstm, gru, transformer, gnn_lstm
 
-  name: resnet50_1d
+  name: lstm
   params:
     input_dim: 9
-    base_width: 64
-    layers: [3, 4, 6, 3]
-    stage_strides: [1, 1, 1, 1]
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    bidirectional: false
 # model:
 #   name: lstm
 #   params:

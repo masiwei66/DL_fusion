@@ -75,6 +75,79 @@ class LSTMModel(StudentModel):
         return self.head.outputs(representation)
 
 
+class GRUModel(StudentModel):
+    """GRU temporal baseline using the same input and regional heads as LSTM."""
+
+    def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
+                 dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True):
+        super().__init__()
+        self.input_dim = input_dim
+        self.encoder = nn.GRU(
+            input_size=input_dim, hidden_size=hidden_size, num_layers=num_layers,
+            batch_first=True, dropout=dropout if num_layers > 1 else 0.0,
+            bidirectional=bidirectional,
+        )
+        output_dim = hidden_size * (2 if bidirectional else 1)
+        self.head = TemporalHead(input_dim, output_dim, regional_targets)
+
+    def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
+        sequence = temporal_features(batch)
+        encoded, _ = self.encoder(sequence)
+        valid_time = batch.temperature_valid_mask.squeeze(-1).float()
+        lengths = valid_time.sum(dim=1).long().clamp_min(1)
+        representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
+        return self.head.outputs(representation)
+
+
+class TemporalTransformerModel(StudentModel):
+    """Transformer encoder baseline over the existing aggregated time features."""
+
+    def __init__(
+        self,
+        input_dim: int = 9,
+        d_model: int = 128,
+        nhead: int = 4,
+        num_layers: int = 2,
+        dim_feedforward: int = 256,
+        dropout: float = 0.1,
+        regional_targets: bool = True,
+    ):
+        super().__init__()
+        if d_model % nhead != 0:
+            raise ValueError("d_model must be divisible by nhead")
+        self.input_dim = int(input_dim)
+        self.input_projection = nn.Linear(input_dim, d_model)
+        self.position_embedding = nn.Parameter(torch.zeros(1, 512, d_model))
+        nn.init.normal_(self.position_embedding, mean=0.0, std=0.02)
+        layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+        self.head = TemporalHead(input_dim, d_model, regional_targets)
+
+    def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
+        sequence = temporal_features(batch)
+        if sequence.shape[1] > self.position_embedding.shape[1]:
+            raise ValueError("window length exceeds configured positional embedding capacity")
+        sequence = self.input_projection(sequence)
+        sequence = sequence + self.position_embedding[:, :sequence.shape[1]]
+        padding_mask = ~batch.temperature_valid_mask.squeeze(-1).bool()
+        # Keep one token unmasked for samples whose time metadata is entirely missing.
+        empty = padding_mask.all(dim=1)
+        if empty.any():
+            padding_mask = padding_mask.clone()
+            padding_mask[empty, 0] = False
+        encoded = self.encoder(sequence, src_key_padding_mask=padding_mask)
+        valid_lengths = (~padding_mask).sum(dim=1).clamp_min(1)
+        representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), valid_lengths - 1]
+        return self.head.outputs(representation)
+
+
 class ResNet50_1DModel(StudentModel):
     """A configurable ResNet-50 bottleneck encoder for short time windows.
 

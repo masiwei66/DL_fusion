@@ -1,0 +1,351 @@
+{
+  "model_name": "resnet50_1d",
+  "model_params": {
+    "input_dim": 9,
+    "base_width": 64,
+    "layers": [
+      3,
+      4,
+      6,
+      3
+    ],
+    "stage_strides": [
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "data_root": "E:\\personal_files\\Dongyaxun\\DL_data\\qianhai7_yearly_temperature_dataset_merged",
+  "window_length": 6,
+  "batch_size": 32,
+  "epochs": 30,
+  "states": 11940,
+  "windows": 250740,
+  "train_windows": 175350,
+  "data": {
+    "window_length": 6,
+    "stride": 1,
+    "eval_stride": 6,
+    "split_stratify": true,
+    "split_seed": 20260924,
+    "data_seed": 42,
+    "train_fraction": 0.7,
+    "validation_fraction": 0.15,
+    "observation_realizations": 4,
+    "noise_std_mm": 0.2,
+    "missing_probability": 0.05,
+    "virtual_point_count_min": 50,
+    "virtual_point_count_max": 100,
+    "train_windows": 175350,
+    "validation_windows": 7164,
+    "test_windows": 7196,
+    "train_states": 5170,
+    "validation_states": 1106,
+    "test_states": 1109,
+    "families_missing_from_train": []
+  },
+  "parameters": {
+    "trainable_parameters": 15990353,
+    "total_parameters": 15990353
+  },
+  "timing_sec": {
+    "epoch_sec": [
+      1077.85272949934,
+      996.9918559007347,
+      1005.8330097999424,
+      1042.5235403999686,
+      168.0324760004878,
+      167.87494120001793,
+      167.98175480030477,
+      167.74099760130048,
+      168.14175290055573,
+      168.96085819974542,
+      170.0849211998284,
+      169.55059649981558,
+      169.44714510068297,
+      169.6060675997287,
+      169.55616159923375,
+      169.42670740000904,
+      170.08709769882262,
+      169.0608598999679,
+      171.9505259990692,
+      173.55067719891667,
+      168.59356299974024,
+      169.2803160995245,
+      168.47655789926648
+    ],
+    "train_total_sec": 7340.605113497004,
+    "total_process_sec": 8020.464274400845
+  },
+  "history": "runs\\history.json",
+  "plots": {
+    "training_history": "runs\\training_history.png",
+    "final_test_evaluation": "runs\\final_test_evaluation.png"
+  },
+  "weights": {
+    "checkpoint": "runs\\models\\resnet50_1d_best.pt"
+  },
+  "metrics": {
+    "validation": {
+      "deck_material": {
+        "output_count": 3,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.6468453378001117,
+          0.5785873813512005,
+          0.6347012841987716
+        ],
+        "precision_per_output": [
+          0.5145211930926217,
+          0.44120196475007223,
+          0.48277583624563153
+        ],
+        "recall_per_output": [
+          0.5034562211981567,
+          0.5846094946401225,
+          0.3795133437990581
+        ],
+        "f1_per_output": [
+          0.5089285714285714,
+          0.502881607113453,
+          0.42496154691276644
+        ],
+        "macro_f1": 0.4789239084849302
+      },
+      "pier_settlement": {
+        "output_count": 3,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.9383026242322725,
+          0.9396984924623115,
+          0.9744556113902848
+        ],
+        "precision_per_output": [
+          0.8324365872405841,
+          0.84913112164297,
+          0.9117647058823529
+        ],
+        "recall_per_output": [
+          0.8286151491966335,
+          0.8168693009118541,
+          0.9516500383729855
+        ],
+        "f1_per_output": [
+          0.8305214723926381,
+          0.8326878388845856,
+          0.9312805107022155
+        ],
+        "macro_f1": 0.8648299406598131
+      },
+      "pier_material": {
+        "output_count": 3,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.5935231714126187,
+          0.594500279173646,
+          0.5940815187046343
+        ],
+        "precision_per_output": [
+          0.4490101979604079,
+          0.4741135864449325,
+          0.4542203147353362
+        ],
+        "recall_per_output": [
+          0.5820373250388803,
+          0.5514598540145985,
+          0.47888386123680243
+        ],
+        "f1_per_output": [
+          0.5069420927869963,
+          0.509870086046904,
+          0.46622613803230545
+        ],
+        "macro_f1": 0.4943461056220686
+      },
+      "bearing_stiffness": {
+        "output_count": 8,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.7740089335566722,
+          0.7740089335566722,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "precision_per_output": [
+          0.44473007712082263,
+          0.3402061855670103,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "recall_per_output": [
+          0.10977157360406091,
+          0.11270491803278689,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "f1_per_output": [
+          0.17608142493638676,
+          0.16931759876859928,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "macro_f1": 0.043174877963123255
+      },
+      "combined_loss": 1.5854295245233958
+    },
+    "test": {
+      "deck_material": {
+        "output_count": 3,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.6306281267370761,
+          0.5812951639799889,
+          0.6045025013896609
+        ],
+        "precision_per_output": [
+          0.5187452180566182,
+          0.4775393419170243,
+          0.49666030534351147
+        ],
+        "recall_per_output": [
+          0.49201741654571846,
+          0.5843837535014006,
+          0.3675847457627119
+        ],
+        "f1_per_output": [
+          0.5050279329608939,
+          0.5255865218075894,
+          0.4224837662337662
+        ],
+        "macro_f1": 0.48436607366741646
+      },
+      "pier_settlement": {
+        "output_count": 3,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.933574207893274,
+          0.9287103946637021,
+          0.9763757643135075
+        ],
+        "precision_per_output": [
+          0.8282828282828283,
+          0.8034807831762146,
+          0.9156626506024096
+        ],
+        "recall_per_output": [
+          0.8057445200302343,
+          0.8207407407407408,
+          0.9544740973312402
+        ],
+        "f1_per_output": [
+          0.8168582375478928,
+          0.8120190545987541,
+          0.9346656418139893
+        ],
+        "macro_f1": 0.8545143113202122
+      },
+      "pier_material": {
+        "output_count": 3,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.5857420789327404,
+          0.5929683157309616,
+          0.5968593663146192
+        ],
+        "precision_per_output": [
+          0.4754574498983445,
+          0.47782196390333437,
+          0.467690110674759
+        ],
+        "recall_per_output": [
+          0.5821479374110953,
+          0.5610632183908046,
+          0.48161764705882354
+        ],
+        "f1_per_output": [
+          0.5234212629896083,
+          0.5161077151825542,
+          0.4745517116464409
+        ],
+        "macro_f1": 0.5046935632728679
+      },
+      "bearing_stiffness": {
+        "output_count": 8,
+        "threshold": 0.5,
+        "accuracy_per_output": [
+          0.7800166759310728,
+          0.7718176764869372,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "precision_per_output": [
+          0.3746958637469586,
+          0.4127906976744186,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "recall_per_output": [
+          0.10405405405405406,
+          0.13724226804123713,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "f1_per_output": [
+          0.16287678476996298,
+          0.2059961315280464,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "macro_f1": 0.046109114537251174
+      },
+      "combined_loss": 1.6077075547281405
+    }
+  },
+  "selection": {
+    "tasks": [
+      "deck_material",
+      "pier_settlement",
+      "pier_material",
+      "bearing_stiffness"
+    ],
+    "metric": "mean_macro_f1",
+    "best_epoch": 13,
+    "best_value": 0.47031870818248384,
+    "early_stopping_patience": 10,
+    "epochs_run": 23,
+    "stopped_epoch": 23
+  }
+}
