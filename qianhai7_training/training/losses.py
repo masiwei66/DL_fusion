@@ -7,7 +7,12 @@ from ..contracts import WindowBatch
 from ..task_labels import TASK_CLASS_COUNT, TASK_LABEL_NAMES
 
 
-def supervised_loss(outputs: dict[str, torch.Tensor], batch: WindowBatch) -> Tensor:
+def supervised_loss(
+    outputs: dict[str, torch.Tensor],
+    batch: WindowBatch,
+    *,
+    task_weights: dict[str, float] | None = None,
+) -> Tensor:
     missing_outputs = [key for key in TASK_LABEL_NAMES if key not in outputs]
     missing_targets = [f"target_{key}" for key in TASK_LABEL_NAMES if f"target_{key}" not in batch.targets]
     if missing_outputs or missing_targets:
@@ -19,7 +24,20 @@ def supervised_loss(outputs: dict[str, torch.Tensor], batch: WindowBatch) -> Ten
             raise ValueError(f"{key} logits must have shape (batch, 4), got {tuple(logits.shape)}")
         if targets.ndim != 1 or targets.shape[0] != logits.shape[0]:
             raise ValueError(f"{key} targets must have shape ({logits.shape[0]},), got {tuple(targets.shape)}")
-    return sum(
-        nn.functional.cross_entropy(outputs[key], batch.targets[f"target_{key}"].long())
+    weights = {key: 1.0 for key in TASK_LABEL_NAMES}
+    if task_weights is not None:
+        unknown = set(task_weights) - set(TASK_LABEL_NAMES)
+        if unknown:
+            raise ValueError(f"Unknown task loss weights: {sorted(unknown)}")
+        for key, value in task_weights.items():
+            if float(value) <= 0.0:
+                raise ValueError(f"Task loss weight for {key} must be > 0")
+            weights[key] = float(value)
+    # Keep the original four-CE sum scale when all weights are one. This avoids
+    # changing the effective learning rate just by enabling the option.
+    scale = len(TASK_LABEL_NAMES) / sum(weights.values())
+    return scale * sum(
+        weights[key]
+        * nn.functional.cross_entropy(outputs[key], batch.targets[f"target_{key}"].long())
         for key in TASK_LABEL_NAMES
     )

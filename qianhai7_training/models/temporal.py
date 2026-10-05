@@ -24,7 +24,12 @@ def temporal_features(batch: WindowBatch) -> torch.Tensor:
     maximum = values.masked_fill(mask == 0, float("-inf")).amax(dim=2, keepdim=True)
     minimum = torch.where(torch.isfinite(minimum), minimum, torch.zeros_like(minimum))
     maximum = torch.where(torch.isfinite(maximum), maximum, torch.zeros_like(maximum))
-    valid_ratio = mask.mean(dim=2, keepdim=True)
+    # Divide by the number of real points in each sample, rather than the
+    # batch-padded point capacity. The latter changes when another sample in
+    # the batch has more virtual points, which makes this feature depend on
+    # batch composition and can expose realization-specific point counts.
+    point_count = batch.point_present_mask.float().sum(dim=1, keepdim=True).clamp_min(1.0)
+    valid_ratio = mask.sum(dim=2, keepdim=True) / point_count[:, None, :]
     time_mask = batch.temperature_valid_mask.float()
     time = batch.time_features * time_mask
     point_mask = batch.point_present_mask.float().unsqueeze(-1)

@@ -32,11 +32,26 @@ class DataConfig:
     validation_fraction: float = 0.15
     # Stratify the state-level split by state_family_id to preserve mechanism coverage.
     split_stratify: bool = True
-    # Number of cached virtual-observation realizations rotated one per epoch.
+    # Number of virtual-observation realizations available to the dataset.
     # 1 means a single deterministic realization (no augmentation).
     observation_realizations: int = 1
+    # Training realization assignment. balanced_random mixes all realizations
+    # within every epoch; rotate is retained only for historical comparisons.
+    realization_sampling: str = "balanced_random"
+    # Validation/test realization count. None means all training realizations.
+    validation_realizations: int | None = None
     noise_scan_std_mm: tuple[float, ...] = (0.0, 0.1, 0.2, 0.4)
     missing_scan_probability: tuple[float, ...] = (0.0, 0.05, 0.1, 0.2)
+
+    def __post_init__(self) -> None:
+        if self.observation_realizations < 1:
+            raise ValueError("data.observation_realizations must be >= 1")
+        if self.realization_sampling not in ("balanced_random", "rotate", "all"):
+            raise ValueError(
+                "data.realization_sampling must be one of: balanced_random, rotate, all"
+            )
+        if self.validation_realizations is not None and self.validation_realizations < 1:
+            raise ValueError("data.validation_realizations must be >= 1 when provided")
 
 
 @dataclass(frozen=True)
@@ -68,6 +83,13 @@ class TrainConfig:
     batch_size: int = 8
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
+    # Validation-score driven decay is less sensitive than a fixed epoch
+    # schedule when observations are stochastic. Set to "none" for a legacy
+    # fixed-learning-rate comparison.
+    lr_scheduler: str = "plateau"
+    lr_factor: float = 0.5
+    lr_patience: int = 3
+    min_learning_rate: float = 1e-5
     device: str = "auto"
     output_root: Path = Path("runs")
     # DataLoader controls. num_workers is the number of CPU worker processes.
@@ -86,8 +108,31 @@ class TrainConfig:
     selection_tasks: tuple[str, ...] = ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness")
     # Stop once the selection score has not improved for this many epochs; 0 disables.
     early_stopping_patience: int = 10
+    # Optional relative task weights. Missing tasks default to one. Weights are
+    # normalized to keep the all-ones loss numerically identical to four CE sum.
+    task_loss_weights: dict[str, float] | None = None
 
     def __post_init__(self) -> None:
+        if self.lr_scheduler not in ("none", "plateau", "cosine"):
+            raise ValueError("train.lr_scheduler must be one of: none, plateau, cosine")
+        if not 0.0 < self.lr_factor < 1.0:
+            raise ValueError("train.lr_factor must be in (0, 1)")
+        if self.lr_patience < 0:
+            raise ValueError("train.lr_patience must be >= 0")
+        if self.min_learning_rate < 0.0:
+            raise ValueError("train.min_learning_rate must be >= 0")
+        if self.task_loss_weights is not None:
+            allowed_tasks = {
+                "deck_material",
+                "pier_material",
+                "pier_settlement",
+                "bearing_stiffness",
+            }
+            unknown = set(self.task_loss_weights) - allowed_tasks
+            if unknown:
+                raise ValueError(f"train.task_loss_weights contains unknown tasks: {sorted(unknown)}")
+            if any(float(value) <= 0.0 for value in self.task_loss_weights.values()):
+                raise ValueError("train.task_loss_weights values must be > 0")
         if self.num_workers < 0:
             raise ValueError("train.num_workers must be >= 0")
         if self.prefetch_factor < 1:

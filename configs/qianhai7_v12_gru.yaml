@@ -8,6 +8,8 @@ data:
   noise_std_mm: 0.2
   missing_probability: 0.05
   observation_realizations: 4
+  realization_sampling: balanced_random
+  validation_realizations: 4
   split_stratify: true
   noise_scan_std_mm: [0.0, 0.1, 0.2, 0.4]
   missing_scan_probability: [0.0, 0.05, 0.1, 0.2]
@@ -18,6 +20,10 @@ train:
   epochs: 30
   learning_rate: 0.001
   weight_decay: 0.0001
+  lr_scheduler: plateau
+  lr_factor: 0.5
+  lr_patience: 3
+  min_learning_rate: 0.00001
   early_stopping_patience: 10
   num_workers: 4
   prefetch_factor: 2

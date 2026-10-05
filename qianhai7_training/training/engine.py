@@ -10,7 +10,8 @@ from .progress import make_progress
 
 
 def train_one_epoch(model, loader, optimizer, device: torch.device, *, desc: str | None = None,
-                    progress: dict[str, Any] | None = None) -> float:
+                    progress: dict[str, Any] | None = None,
+                    task_weights: dict[str, float] | None = None) -> float:
     model.train()
     total = 0.0
     count = 0
@@ -20,7 +21,7 @@ def train_one_epoch(model, loader, optimizer, device: torch.device, *, desc: str
             assert isinstance(batch, WindowBatch)
             batch = batch.to(device)
             optimizer.zero_grad(set_to_none=True)
-            loss = supervised_loss(model.forward_batch(batch), batch)
+            loss = supervised_loss(model.forward_batch(batch), batch, task_weights=task_weights)
             loss.backward()
             optimizer.step()
             total += float(loss.detach()) * batch.batch_size

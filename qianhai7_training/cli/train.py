@@ -37,7 +37,15 @@ from ..training.progress import make_progress
 from ..training.report import Stopwatch, classification_metrics, count_parameters, write_report
 
 
-def describe_run(data, splits, eval_splits, eval_stride, realizations, distribution) -> dict[str, Any]:
+def describe_run(
+    data,
+    splits,
+    eval_splits,
+    eval_stride,
+    realizations,
+    validation_realizations,
+    distribution,
+) -> dict[str, Any]:
     """Data settings and split sizes, so a report can be interpreted later."""
     return {
         "window_length": data.window_length,
@@ -46,9 +54,11 @@ def describe_run(data, splits, eval_splits, eval_stride, realizations, distribut
         "split_stratify": data.split_stratify,
         "split_seed": data.split_seed,
         "data_seed": data.seed,
+        "realization_sampling": data.realization_sampling,
         "train_fraction": data.train_fraction,
         "validation_fraction": data.validation_fraction,
         "observation_realizations": realizations,
+        "validation_realizations": validation_realizations,
         "noise_std_mm": data.noise_std_mm,
         "missing_probability": data.missing_probability,
         "virtual_point_count_min": data.virtual_point_count_min,
@@ -56,6 +66,8 @@ def describe_run(data, splits, eval_splits, eval_stride, realizations, distribut
         "train_windows": len(splits["train"]),
         "validation_windows": len(eval_splits["validation"]),
         "test_windows": len(eval_splits["test"]),
+        "validation_evaluated_samples": len(eval_splits["validation"]) * validation_realizations,
+        "test_evaluated_samples": len(eval_splits["test"]) * validation_realizations,
         "train_states": distribution["train"]["unique_states"],
         "validation_states": distribution["validation"]["unique_states"],
         "test_states": distribution["test"]["unique_states"],
@@ -90,7 +102,7 @@ def make_loader(refs, observation, seed, normalization, batch_size, shuffle=Fals
     return DataLoader(**options)
 
 
-def evaluate_torch(model, loader, device, *, desc=None, progress=None):
+def evaluate_torch(model, loader, device, *, desc=None, progress=None, task_weights=None):
     model.eval()
     collected = {key: {"true": [], "prob": []} for key in TASK_LABEL_NAMES}
     loss_sum = 0.0
@@ -100,7 +112,7 @@ def evaluate_torch(model, loader, device, *, desc=None, progress=None):
         for batch_index, batch in enumerate(loader, start=1):
             batch = batch.to(device)
             outputs = model.forward_batch(batch)
-            loss_sum += float(supervised_loss(outputs, batch)) * batch.batch_size
+            loss_sum += float(supervised_loss(outputs, batch, task_weights=task_weights)) * batch.batch_size
             sample_count += batch.batch_size
             for key in TASK_LABEL_NAMES:
                 collected[key]["true"].append(batch.targets[f"target_{key}"].cpu().numpy())
@@ -154,11 +166,16 @@ def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
         "optimizer_state_dict": optimizer.state_dict(),
         "epoch": epoch,
         "window_length": config.data.window_length,
+        "observation_realizations": config.data.observation_realizations,
+        "validation_realizations": config.data.validation_realizations or config.data.observation_realizations,
+        "realization_sampling": config.data.realization_sampling,
         "normalization": normalization.__dict__,
         "target_schema": TASK_LABEL_SCHEMA,
         "target_version": "v1",
         "task_names": list(TASK_LABEL_NAMES),
         "class_names": list(TASK_LABEL_LEVEL_NAMES),
+        "task_loss_weights": config.train.task_loss_weights,
+        "lr_scheduler": config.train.lr_scheduler,
     }, path)
 
 
@@ -227,20 +244,44 @@ def main() -> None:
     # Always routed through the sampler: shuffling then comes from an explicit
     # seed instead of the global torch RNG, whose state depends on how much
     # randomness model construction consumed first.
-    train_sampler = RotatingRealizationSampler(len(splits["train"]), realizations, seed=data.split_seed)
+    train_sampler = RotatingRealizationSampler(
+        len(splits["train"]),
+        realizations,
+        seed=data.split_seed,
+        strategy=data.realization_sampling,
+    )
     loader = make_loader(splits["train"], observation, data.seed, normalization, train.batch_size,
                          realizations=realizations, sampler=train_sampler,
                          regional_target_config=config.regional_targets, **loader_kwargs)
-    # Evaluation stays on a single deterministic realization so metrics are
-    # comparable across epochs and runs.
+    # Evaluate every configured realization with one deterministic pass. A
+    # single fixed realization creates a periodic validation signal when the
+    # training sampler rotates or mixes observation layouts.
+    validation_realizations = data.validation_realizations or realizations
+    validation_sampler = RotatingRealizationSampler(
+        len(eval_splits["validation"]),
+        validation_realizations,
+        seed=data.split_seed,
+        shuffle=False,
+        strategy="all",
+    )
     validation_loader = make_loader(eval_splits["validation"], observation, data.seed, normalization, train.batch_size,
+                                    realizations=validation_realizations, sampler=validation_sampler,
                                     regional_target_config=config.regional_targets, **loader_kwargs)
+    test_sampler = RotatingRealizationSampler(
+        len(eval_splits["test"]),
+        validation_realizations,
+        seed=data.split_seed,
+        shuffle=False,
+        strategy="all",
+    )
     test_loader = make_loader(eval_splits["test"], observation, data.seed, normalization, train.batch_size,
+                              realizations=validation_realizations, sampler=test_sampler,
                               regional_target_config=config.regional_targets, **loader_kwargs)
     if realizations > 1:
         per_worker_mib = distribution["train"]["unique_states"] * realizations * 25 / 1024
         print(
-            f"observation_realizations={realizations} epoch_rotation={realizations} "
+            f"observation_realizations={realizations} training_sampling={data.realization_sampling} "
+            f"validation_realizations={validation_realizations} evaluation_sampling=all "
             f"estimated_cache_mib={per_worker_mib * max(train.num_workers, 1):.0f}",
             flush=True,
         )
@@ -262,6 +303,23 @@ def main() -> None:
         flush=True,
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=train.learning_rate, weight_decay=train.weight_decay)
+    if train.lr_scheduler == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="max",
+            factor=train.lr_factor,
+            patience=train.lr_patience,
+            threshold=1e-3,
+            min_lr=train.min_learning_rate,
+        )
+    elif train.lr_scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(train.epochs, 1),
+            eta_min=train.min_learning_rate,
+        )
+    else:
+        scheduler = None
     weights_dir = train.output_root / "models"
     weights_dir.mkdir(parents=True, exist_ok=True)
     epoch_times: list[float] = []
@@ -276,10 +334,25 @@ def main() -> None:
     for epoch in range(train.epochs):
         train_sampler.set_epoch(epoch)
         epoch_started = time.perf_counter()
-        loss = train_one_epoch(model, loader, optimizer, device, desc=f"train_batches epoch={epoch + 1}", progress=progress_options)
+        loss = train_one_epoch(
+            model,
+            loader,
+            optimizer,
+            device,
+            desc=f"train_batches epoch={epoch + 1}",
+            progress=progress_options,
+            task_weights=train.task_loss_weights,
+        )
         epoch_elapsed = time.perf_counter() - epoch_started
         epoch_times.append(epoch_elapsed)
-        validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
+        validation_loss, validation_predictions = evaluate_torch(
+            model,
+            validation_loader,
+            device,
+            desc="validation_batches",
+            progress=progress_options,
+            task_weights=train.task_loss_weights,
+        )
         validation_metrics = pack_metrics(validation_predictions)
         selection_score = float(np.mean([
             validation_metrics[key]["macro_f1"] for key in selection_tasks
@@ -304,6 +377,11 @@ def main() -> None:
             save_torch_checkpoint(checkpoint_path, model, optimizer, config, normalization, epoch + 1)
         else:
             epochs_without_improvement += 1
+        if scheduler is not None:
+            if train.lr_scheduler == "plateau":
+                scheduler.step(selection_score)
+            else:
+                scheduler.step()
         print(
             f"epoch={epoch + 1} train_loss={loss:.6f} validation_loss={validation_loss:.6f} "
             f"validation_macro_f1={selection_score:.6f} "
@@ -320,8 +398,22 @@ def main() -> None:
             break
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    validation_loss, validation_predictions = evaluate_torch(model, validation_loader, device, desc="validation_batches", progress=progress_options)
-    test_loss, test_predictions = evaluate_torch(model, test_loader, device, desc="test_batches", progress=progress_options)
+    validation_loss, validation_predictions = evaluate_torch(
+        model,
+        validation_loader,
+        device,
+        desc="validation_batches",
+        progress=progress_options,
+        task_weights=train.task_loss_weights,
+    )
+    test_loss, test_predictions = evaluate_torch(
+        model,
+        test_loader,
+        device,
+        desc="test_batches",
+        progress=progress_options,
+        task_weights=train.task_loss_weights,
+    )
     history_plot_path = train.output_root / "training_history.png"
     plot_training_history(history, history_plot_path)
     test_metrics = pack_metrics(test_predictions, test_loss)
@@ -337,10 +429,27 @@ def main() -> None:
         "window_length": data.window_length,
         "batch_size": train.batch_size,
         "epochs": train.epochs,
+        "optimization": {
+            "learning_rate": train.learning_rate,
+            "weight_decay": train.weight_decay,
+            "lr_scheduler": train.lr_scheduler,
+            "lr_factor": train.lr_factor,
+            "lr_patience": train.lr_patience,
+            "min_learning_rate": train.min_learning_rate,
+            "task_loss_weights": train.task_loss_weights,
+        },
         "states": len(index.records),
         "windows": len(refs),
         "train_windows": len(splits["train"]),
-        "data": describe_run(data, splits, eval_splits, eval_stride, realizations, distribution),
+        "data": describe_run(
+            data,
+            splits,
+            eval_splits,
+            eval_stride,
+            realizations,
+            validation_realizations,
+            distribution,
+        ),
         "parameters": count_parameters(model),
         "timing_sec": {
             "epoch_sec": epoch_times,
