@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from ..contracts import WindowBatch
+from ..task_labels import TASK_CLASS_COUNT, TASK_LABEL_NAMES
 from .base import StudentModel
 
 
@@ -37,19 +38,16 @@ class TemporalHead(nn.Module):
     def __init__(self, input_dim: int, representation_dim: int, regional_targets: bool = True):
         super().__init__()
         if not regional_targets:
-            raise ValueError("regional_targets must be enabled; legacy classification heads are removed")
-        self.deck_material_regional_head = nn.Linear(representation_dim, 3)
-        self.pier_settlement_regional_head = nn.Linear(representation_dim, 3)
-        self.pier_material_regional_head = nn.Linear(representation_dim, 3)
-        self.bearing_stiffness_regional_head = nn.Linear(representation_dim, 8)
+            raise ValueError("four-task classification heads must be enabled")
+        self.task_heads = nn.ModuleDict({
+            name: nn.Linear(representation_dim, TASK_CLASS_COUNT)
+            for name in TASK_LABEL_NAMES
+        })
 
     def outputs(self, representation: torch.Tensor) -> dict[str, torch.Tensor]:
         return {
             "representation": representation,
-            "deck_material": self.deck_material_regional_head(representation),
-            "pier_settlement": self.pier_settlement_regional_head(representation),
-            "pier_material": self.pier_material_regional_head(representation),
-            "bearing_stiffness": self.bearing_stiffness_regional_head(representation),
+            **{name: head(representation) for name, head in self.task_heads.items()},
         }
 
 

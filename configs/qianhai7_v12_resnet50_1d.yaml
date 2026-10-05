@@ -1,5 +1,5 @@
 data:
-  data_root: E:/working/DL_data/qianhai_test
+  data_root: E:/working/DL_data/qianhai7_yearly_temperature_dataset_v3_final
   window_length: 6
   stride: 1
   eval_stride: 6

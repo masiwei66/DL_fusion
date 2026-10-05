@@ -30,12 +30,12 @@ def plot_training_history(history: list[dict[str, Any]], save_path: str | Path) 
     axes[0].plot(epochs, [row["train_loss"] for row in history], label="train loss")
     axes[0].plot(epochs, [row["validation_loss"] for row in history], label="validation loss")
     axes[0].set_xlabel("Epoch")
-    axes[0].set_ylabel("Combined cross-entropy loss")
+    axes[0].set_ylabel("Sum of four task cross-entropy losses")
     axes[0].set_title("Training and validation loss")
     axes[0].grid(alpha=0.25)
     axes[0].legend()
     for task in tasks:
-        key = f"validation_{task}_f1_macro"
+        key = f"validation_{task}_macro_f1"
         axes[1].plot(epochs, [row.get(key, 0.0) for row in history], label=task)
     axes[1].set_xlabel("Epoch")
     axes[1].set_ylabel("Macro F1")
@@ -65,12 +65,13 @@ def plot_final_evaluation(metrics: dict[str, Any], save_path: str | Path) -> boo
         metric = metrics[task]
         ax = axes[index // columns][index % columns]
         f1 = metric.get("macro_f1", float("nan"))
-        values = metric.get("f1_per_output", [])
+        values = metric.get("f1_per_class", [])
         if values:
             ax.bar(range(len(values)), values, color="#2f6f9f")
             ax.set_ylim(0.0, 1.0)
             ax.set_xticks(range(len(values)))
-            ax.set_xlabel("Output index")
+            ax.set_xticklabels(metric.get("class_names", range(len(values))))
+            ax.set_xlabel("Severity class")
             ax.set_ylabel("F1")
         else:
             ax.text(0.5, 0.5, "No metric values", ha="center", va="center")

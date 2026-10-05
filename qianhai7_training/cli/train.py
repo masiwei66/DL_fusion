@@ -25,11 +25,16 @@ from ..data.observation import ObservationConfig
 from ..data.sampler import RotatingRealizationSampler
 from ..data.windows import make_window_refs, missing_train_families, split_by_state, split_distribution
 from ..models.registry import build_model
+from ..task_labels import (
+    TASK_LABEL_LEVEL_NAMES,
+    TASK_LABEL_NAMES,
+    TASK_LABEL_SCHEMA,
+)
 from ..training.engine import train_one_epoch
 from ..training.losses import supervised_loss
 from ..training.plots import plot_final_evaluation, plot_training_history, write_history
 from ..training.progress import make_progress
-from ..training.report import Stopwatch, count_parameters, write_report
+from ..training.report import Stopwatch, classification_metrics, count_parameters, write_report
 
 
 def describe_run(data, splits, eval_splits, eval_stride, realizations, distribution) -> dict[str, Any]:
@@ -87,8 +92,7 @@ def make_loader(refs, observation, seed, normalization, batch_size, shuffle=Fals
 
 def evaluate_torch(model, loader, device, *, desc=None, progress=None):
     model.eval()
-    regional_keys = ("deck_material", "pier_settlement", "pier_material", "bearing_stiffness")
-    collected = {key: {"true": [], "prob": []} for key in regional_keys}
+    collected = {key: {"true": [], "prob": []} for key in TASK_LABEL_NAMES}
     loss_sum = 0.0
     sample_count = 0
     total_batches = len(loader) if hasattr(loader, "__len__") else None
@@ -98,15 +102,15 @@ def evaluate_torch(model, loader, device, *, desc=None, progress=None):
             outputs = model.forward_batch(batch)
             loss_sum += float(supervised_loss(outputs, batch)) * batch.batch_size
             sample_count += batch.batch_size
-            for key in collected:
+            for key in TASK_LABEL_NAMES:
                 collected[key]["true"].append(batch.targets[f"target_{key}"].cpu().numpy())
-                collected[key]["prob"].append(torch.sigmoid(outputs[key]).cpu().numpy())
+                collected[key]["prob"].append(torch.softmax(outputs[key], dim=-1).cpu().numpy())
             tracker.update(batch_index, average_loss=loss_sum / max(sample_count, 1))
     predictions = {}
     for key, items in collected.items():
         y_true = np.concatenate(items["true"])
         y_prob = np.concatenate(items["prob"])
-        y_pred = (y_prob >= 0.5).astype(np.int64)
+        y_pred = y_prob.argmax(axis=-1).astype(np.int64)
         predictions[key] = {
             "y_true": y_true,
             "y_pred": y_pred,
@@ -118,20 +122,25 @@ def evaluate_torch(model, loader, device, *, desc=None, progress=None):
 
 def pack_metrics(predictions, losses=None):
     results = {}
+    from sklearn.metrics import f1_score
+
     for key, values in predictions.items():
-        results[key] = {"output_count": int(values["y_true"].shape[1]), "threshold": 0.5}
-        results[key]["accuracy_per_output"] = (values["y_true"] == values["y_pred"]).mean(axis=0).tolist()
-        results[key]["precision_per_output"] = []
-        results[key]["recall_per_output"] = []
-        results[key]["f1_per_output"] = []
-        from sklearn.metrics import f1_score, precision_score, recall_score
-        for column in range(values["y_true"].shape[1]):
-            true = values["y_true"][:, column]
-            pred = values["y_pred"][:, column]
-            results[key]["precision_per_output"].append(float(precision_score(true, pred, zero_division=0)))
-            results[key]["recall_per_output"].append(float(recall_score(true, pred, zero_division=0)))
-            results[key]["f1_per_output"].append(float(f1_score(true, pred, zero_division=0)))
-        results[key]["macro_f1"] = float(np.mean(results[key]["f1_per_output"]))
+        metric = classification_metrics(
+            values["y_true"],
+            values["y_pred"],
+            values["y_prob"],
+            class_values=np.arange(len(TASK_LABEL_LEVEL_NAMES)),
+        )
+        metric["macro_f1"] = metric["f1_macro"]
+        metric["class_names"] = list(TASK_LABEL_LEVEL_NAMES)
+        metric["f1_per_class"] = f1_score(
+            values["y_true"],
+            values["y_pred"],
+            labels=np.arange(len(TASK_LABEL_LEVEL_NAMES)),
+            average=None,
+            zero_division=0,
+        ).tolist()
+        results[key] = metric
     if losses is not None:
         results["combined_loss"] = float(losses)
     return results
@@ -146,8 +155,10 @@ def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
         "epoch": epoch,
         "window_length": config.data.window_length,
         "normalization": normalization.__dict__,
-        "target_schema": config.regional_targets.target_schema,
-        "target_version": config.regional_targets.target_version,
+        "target_schema": TASK_LABEL_SCHEMA,
+        "target_version": "v1",
+        "task_names": list(TASK_LABEL_NAMES),
+        "class_names": list(TASK_LABEL_LEVEL_NAMES),
     }, path)
 
 
@@ -240,7 +251,7 @@ def main() -> None:
     print("stage=model_initialization", flush=True)
     model = build_model(config.model.name, **config.model.kwargs)
     if config.model.name == "xgboost":
-        raise ValueError("xgboost is not supported by regional_anomaly_v1; use a regional neural model")
+        raise ValueError("xgboost has no adapter for the v3 four-task ordinal target contract yet")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     parameter_counts = count_parameters(model)
@@ -295,7 +306,7 @@ def main() -> None:
             epochs_without_improvement += 1
         print(
             f"epoch={epoch + 1} train_loss={loss:.6f} validation_loss={validation_loss:.6f} "
-            f"validation_regional_macro_f1={selection_score:.6f} "
+            f"validation_macro_f1={selection_score:.6f} "
             f"selection_score={selection_score:.6f} elapsed_sec={epoch_elapsed:.1f}",
             flush=True,
         )
@@ -319,6 +330,9 @@ def main() -> None:
     report = {
         "model_name": config.model.name,
         "model_params": config.model.kwargs,
+        "target_schema": TASK_LABEL_SCHEMA,
+        "task_names": list(TASK_LABEL_NAMES),
+        "class_names": list(TASK_LABEL_LEVEL_NAMES),
         "data_root": str(data.data_root),
         "window_length": data.window_length,
         "batch_size": train.batch_size,

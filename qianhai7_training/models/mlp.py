@@ -4,6 +4,7 @@ import torch
 from torch import nn
 
 from ..contracts import WindowBatch
+from ..task_labels import TASK_CLASS_COUNT, TASK_LABEL_NAMES
 from .base import StudentModel
 
 
@@ -14,11 +15,10 @@ class PointSetMLP(StudentModel):
         super().__init__()
         self.encoder = nn.Sequential(nn.Linear(point_feature_dim + time_feature_dim + 2, 64), nn.ReLU(), nn.Linear(64, 64), nn.ReLU())
         if not regional_targets:
-            raise ValueError("regional_targets must be enabled; legacy classification heads are removed")
-        self.deck_material_head = nn.Linear(64, 3)
-        self.pier_settlement_head = nn.Linear(64, 3)
-        self.pier_material_head = nn.Linear(64, 3)
-        self.bearing_stiffness_head = nn.Linear(64, 8)
+            raise ValueError("four-task classification heads must be enabled")
+        self.task_heads = nn.ModuleDict({
+            name: nn.Linear(64, TASK_CLASS_COUNT) for name in TASK_LABEL_NAMES
+        })
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
         mask = (batch.valid_mask & batch.point_present_mask[:, None, :]).float()
@@ -31,4 +31,7 @@ class PointSetMLP(StudentModel):
         time_mean = (batch.time_features * time_mask).sum(dim=1) / time_mask.sum(dim=1).clamp_min(1.0)
         features = torch.cat([point_mean, time_mean, value_mean.squeeze(-1), value_std.squeeze(-1)], dim=-1)
         representation = self.encoder(features)
-        return {"representation": representation, "deck_material": self.deck_material_head(representation), "pier_settlement": self.pier_settlement_head(representation), "pier_material": self.pier_material_head(representation), "bearing_stiffness": self.bearing_stiffness_head(representation)}
+        return {
+            "representation": representation,
+            **{name: head(representation) for name, head in self.task_heads.items()},
+        }

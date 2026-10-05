@@ -8,9 +8,11 @@ from typing import Any
 import h5py
 import numpy as np
 
+from ..task_labels import TASK_LABEL_LEVEL_NAMES, TASK_LABEL_NAMES, TASK_CLASS_COUNT
+
 
 class HDF5StateSource:
-    """Lazy adapter from one v12 archive file to loader arrays."""
+    """Lazy adapter from one v3 ordinal-label archive file to loader arrays."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -27,8 +29,39 @@ class HDF5StateSource:
             raw_manifest = handle["manifest_json"][()]
             if isinstance(raw_manifest, bytes):
                 raw_manifest = raw_manifest.decode("utf-8")
+            task_names = tuple(
+                value.decode("utf-8") if isinstance(value, bytes) else str(value)
+                for value in handle["labels/task_label_names"][()]
+            )
+            task_level_names = tuple(
+                value.decode("utf-8") if isinstance(value, bytes) else str(value)
+                for value in handle["labels/task_label_level_names"][()]
+            )
+            task_levels = np.asarray(
+                handle["labels/task_level_by_acquisition"], dtype=np.int64
+            )
+            if task_names != TASK_LABEL_NAMES:
+                raise ValueError(
+                    f"{self.path}: task label order {task_names} does not match "
+                    f"the training contract {TASK_LABEL_NAMES}"
+                )
+            if task_level_names != TASK_LABEL_LEVEL_NAMES:
+                raise ValueError(
+                    f"{self.path}: task level vocabulary {task_level_names} does not "
+                    f"match {TASK_LABEL_LEVEL_NAMES}"
+                )
+            if task_levels.ndim != 2 or task_levels.shape[1] != len(TASK_LABEL_NAMES):
+                raise ValueError(
+                    f"{self.path}: task_level_by_acquisition must have shape (steps, 4); "
+                    f"got {task_levels.shape}"
+                )
+            if np.any((task_levels < 0) | (task_levels >= TASK_CLASS_COUNT)):
+                raise ValueError(f"{self.path}: task labels contain codes outside 0..3")
             result = {
                 "manifest": json.loads(raw_manifest),
+                "task_label_names": np.asarray(task_names, dtype=str),
+                "task_label_level_names": np.asarray(task_level_names, dtype=str),
+                "task_level_by_acquisition": task_levels,
                 "node_coords": np.asarray(handle["mesh/node_coords"], dtype=np.float32),
                 "node_ids": np.asarray(handle["mesh/node_ids"], dtype=np.int64),
                 "deck_node_mask": np.asarray(handle["mesh/deck_node_mask"], dtype=bool),

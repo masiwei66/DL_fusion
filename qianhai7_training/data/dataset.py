@@ -10,7 +10,7 @@ from ..contracts import WindowBatch
 from .hdf5_source import HDF5StateSource
 from .normalization import NormalizationStats
 from .observation import ObservationConfig, sample_virtual_observation
-from .regional_targets import regional_targets
+from ..task_labels import TASK_LABEL_LEVEL_NAMES, TASK_LABEL_NAMES, task_targets_at_index
 from .windows import WindowRef
 
 # Large enough to dominate `sum(ord(char) for char in state_id)`, so that
@@ -22,8 +22,8 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
     # Everything a window needs from a state other than the observation view. The
     # displacement field is deliberately absent: it only feeds the observation, so
     # keeping it would defeat the cache with a multi-megabyte read per window.
-    # Must cover every key `regional_targets` reads: a missing key would be
-    # silently replaced by `.get` defaults and turn all four targets into zeros.
+    # Keep the v3 ordinal labels with the cached state so every overlapping
+    # window reads the same acquisition-aligned target without reopening HDF5.
     _STATE_ARRAYS = (
         "temperature_C",
         "delta_days",
@@ -39,6 +39,9 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         "support_group_names",
         "support_trans_scale_by_group",
         "support_rot_scale_by_group",
+        "task_label_names",
+        "task_label_level_names",
+        "task_level_by_acquisition",
     )
 
     def __init__(
@@ -55,9 +58,8 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         self.seed = seed
         self.normalization = normalization
         self.realizations = max(int(realizations), 1)
-        if regional_target_config is None:
-            raise ValueError("regional_target_config is required for regional_anomaly_v1")
-        self.regional_target_config = regional_target_config
+        # Kept in the constructor for existing experiment configs; v3 labels are
+        # read directly from the archive and are not threshold-derived here.
         self._state_cache: dict[tuple[str, int], dict[str, Any]] = {}
 
     def _realization_seed(self, state_id: str, realization: int) -> int:
@@ -136,7 +138,7 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
         support_ratio = self._at_step(arrays["support_settlement_ratio"], ref.target_index, np.zeros(0, dtype=np.float32))
         local_deck = self._at_step(arrays["local_deck_settlement_mm"], ref.target_index, np.zeros(0, dtype=np.float32))
         mechanisms = self._mechanism_targets(arrays, ref.target_index)
-        regional = regional_targets(arrays, ref.target_index, self.regional_target_config)
+        task_targets = task_targets_at_index(arrays, ref.target_index)
         return {
             "values": values,
             "valid_mask": valid_mask,
@@ -149,7 +151,7 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
             "delta_days_valid_mask": delta_days_valid_mask,
             "delta_days": delta_days,
             **{f"target_{key}": value for key, value in mechanisms.items()},
-            **{f"target_{key}": value for key, value in regional.items()},
+            **{f"target_{key}": np.int64(value) for key, value in task_targets.items()},
             "target_support_settlement_mm": np.asarray(support_mm, dtype=np.float32),
             "target_support_settlement_ratio": np.asarray(support_ratio, dtype=np.float32),
             "target_local_deck_settlement_mm": np.asarray(local_deck, dtype=np.float32),
@@ -158,6 +160,11 @@ class QianhaiWindowDataset(Dataset[dict[str, Any]]):
                 "structural_state_id": ref.record.structural_state_id,
                 "window_start": ref.start,
                 "window_length": ref.length,
+                "target_index": ref.target_index,
+                "target_task_level_names": {
+                    name: TASK_LABEL_LEVEL_NAMES[value]
+                    for name, value in task_targets.items()
+                },
                 "mapping_valid_fraction": float(view["mapping_valid"].mean()),
                 "mapping_distance_max": float(view["mapping_distance"].max()),
                 "point_count": int(view["point_count"]),
@@ -218,9 +225,14 @@ def collate_window_batches(items: list[dict[str, Any]]) -> WindowBatch:
             "local_deck_settlement_mm": local_deck,
             "local_deck_settlement_mm_valid": local_deck_valid,
             **{
+                f"target_{name}": torch.as_tensor(
+                    [int(item[f"target_{name}"]) for item in items], dtype=torch.long
+                )
+                for name in TASK_LABEL_NAMES
+            },
+            **{
                 key: torch.from_numpy(np.stack([np.asarray(item[key], dtype=np.float32) for item in items]))
                 for key in (
-                    "target_deck_material", "target_pier_settlement", "target_pier_material", "target_bearing_stiffness",
                     "target_physical_deck_material", "target_physical_pier_settlement", "target_physical_pier_material", "target_physical_bearing_stiffness",
                     "target_engineering_deck_material", "target_engineering_pier_settlement", "target_engineering_pier_material", "target_engineering_bearing_stiffness",
                 )
