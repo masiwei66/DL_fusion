@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .mlp import PointSetMLP
+from .spatiotemporal import GCNLSTMModel
 from .temporal import GRUModel, LSTMModel, ResNet1DModel, ResNet50_1DModel, TemporalTransformerModel
 from .xgboost_model import XGBoostModel
 
@@ -13,7 +14,7 @@ MODEL_REGISTRY = {
     "lstm": {"implemented": True, "family": "temporal"},
     "gru": {"implemented": True, "family": "temporal"},
     "transformer": {"implemented": True, "family": "temporal"},
-    "gnn_lstm": {"implemented": False, "family": "spatiotemporal"},
+    "gnn_lstm": {"implemented": True, "family": "spatiotemporal"},
 }
 
 
@@ -34,6 +35,8 @@ def build_model(name: str, **kwargs):
         return GRUModel(**kwargs)
     if name == "transformer":
         return TemporalTransformerModel(**kwargs)
+    if name == "gnn_lstm":
+        return GCNLSTMModel(**kwargs)
     if name == "xgboost":
         return XGBoostModel(**kwargs)
     if name in MODEL_REGISTRY and not MODEL_REGISTRY[name]["implemented"]:

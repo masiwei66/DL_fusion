@@ -133,6 +133,7 @@ class QianhaiOrdinalTargetTests(unittest.TestCase):
             "lstm": {"hidden_size": 8, "num_layers": 1},
             "gru": {"hidden_size": 8, "num_layers": 1},
             "transformer": {"d_model": 8, "nhead": 2, "num_layers": 1, "dim_feedforward": 16},
+            "gnn_lstm": {"graph_hidden_dim": 8, "lstm_hidden_size": 8, "graph_layers": 1, "lstm_layers": 1, "knn_k": 2},
         }
         for model_name, options in model_options.items():
             with self.subTest(model=model_name):
