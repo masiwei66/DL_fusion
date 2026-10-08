@@ -25,6 +25,7 @@ from ..data.observation import ObservationConfig
 from ..data.sampler import RotatingRealizationSampler
 from ..data.windows import make_window_refs, missing_train_families, split_by_state, split_distribution
 from ..models.registry import build_model
+from ..models.xgboost_model import XGBoostModel, window_features
 from ..task_labels import (
     TASK_LABEL_LEVEL_NAMES,
     TASK_LABEL_NAMES,
@@ -179,6 +180,126 @@ def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
     }, path)
 
 
+def _xgb_features_and_targets(loader, device="cpu"):
+    del device
+    feature_rows = []
+    targets = {task: [] for task in TASK_LABEL_NAMES}
+    for batch in loader:
+        feature_rows.append(window_features(batch))
+        for task in TASK_LABEL_NAMES:
+            targets[task].append(batch.targets[f"target_{task}"].numpy())
+    features = np.concatenate(feature_rows, axis=0)
+    labels = {task: np.concatenate(rows, axis=0).astype(np.int64) for task, rows in targets.items()}
+    return features, labels
+
+
+def _evaluate_xgb(model, features, labels):
+    probabilities = model.predict_proba(features)
+    predictions = {}
+    for task in TASK_LABEL_NAMES:
+        probability = probabilities[task]
+        predictions[task] = {
+            "y_true": labels[task],
+            "y_pred": probability.argmax(axis=1).astype(np.int64),
+            "y_prob": probability,
+            "class_values": np.arange(len(TASK_LABEL_LEVEL_NAMES)),
+        }
+    return predictions
+
+
+def train_xgboost(config, train_loader, validation_loader, test_loader, normalization, splits, eval_splits,
+                  distribution, index, refs, eval_stride, run_clock):
+    """Train four XGBoost heads while preserving the standard report contract."""
+    from sklearn.metrics import log_loss
+
+    stage_started = time.perf_counter()
+    train_features, train_labels = _xgb_features_and_targets(train_loader)
+    validation_features, validation_labels = _xgb_features_and_targets(validation_loader)
+    test_features, test_labels = _xgb_features_and_targets(test_loader)
+    print(
+        f"xgboost_features train_shape={train_features.shape} validation_shape={validation_features.shape} "
+        f"test_shape={test_features.shape} elapsed_sec={time.perf_counter() - stage_started:.1f}",
+        flush=True,
+    )
+
+    model = XGBoostModel(**config.model.kwargs)
+    models_dir = config.train.output_root / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+    best_score = float("-inf")
+    best_round = 0
+    history = []
+    for task, estimator in model.models.items():
+        fit_kwargs = {"eval_set": [(validation_features, validation_labels[task])], "verbose": False}
+        estimator.fit(train_features, train_labels[task], **fit_kwargs)
+
+    validation_predictions = _evaluate_xgb(model, validation_features, validation_labels)
+    validation_metrics = pack_metrics(validation_predictions)
+    selection_tasks = tuple(config.train.selection_tasks)
+    best_score = float(np.mean([validation_metrics[key]["macro_f1"] for key in selection_tasks]))
+    best_round = max(
+        int(getattr(estimator, "best_iteration", -1)) + 1
+        for estimator in model.models.values()
+    )
+    test_predictions = _evaluate_xgb(model, test_features, test_labels)
+    test_metrics = pack_metrics(test_predictions)
+    history.append({
+        "epoch": best_round,
+        "train_loss": float(np.mean([
+            log_loss(train_labels[task], model.models[task].predict_proba(train_features), labels=np.arange(4))
+            for task in TASK_LABEL_NAMES
+        ])),
+        "validation_loss": float(np.mean([
+            log_loss(validation_labels[task], model.models[task].predict_proba(validation_features), labels=np.arange(4))
+            for task in TASK_LABEL_NAMES
+        ])),
+        "validation_selection_macro_f1": best_score,
+        **{f"validation_{task}_macro_f1": float(validation_metrics[task]["macro_f1"]) for task in TASK_LABEL_NAMES},
+    })
+
+    import joblib
+    checkpoint_path = models_dir / "xgboost_best.joblib"
+    joblib.dump(model, checkpoint_path)
+    history_path = config.train.output_root / "history.json"
+    write_history(history_path, history)
+    history_plot_path = config.train.output_root / "training_history.png"
+    plot_training_history(history, history_plot_path)
+    evaluation_plot_path = config.train.output_root / "final_test_evaluation.png"
+    plot_final_evaluation(test_metrics, evaluation_plot_path)
+    report = {
+        "model_name": config.model.name,
+        "model_params": config.model.kwargs,
+        "target_schema": TASK_LABEL_SCHEMA,
+        "task_names": list(TASK_LABEL_NAMES),
+        "class_names": list(TASK_LABEL_LEVEL_NAMES),
+        "data_root": str(config.data.data_root),
+        "window_length": config.data.window_length,
+        "batch_size": config.train.batch_size,
+        "epochs": config.train.epochs,
+        "optimization": {"xgboost_params": config.model.kwargs},
+        "states": len(index.records),
+        "windows": len(refs),
+        "train_windows": len(splits["train"]),
+        "data": describe_run(config.data, splits, eval_splits, eval_stride,
+                              config.data.observation_realizations,
+                              config.data.validation_realizations or config.data.observation_realizations,
+                              distribution),
+        "parameters": model.parameter_counts(),
+        "timing_sec": {"total_process_sec": run_clock.elapsed()},
+        "history": str(history_path),
+        "plots": {"training_history": str(history_plot_path), "final_test_evaluation": str(evaluation_plot_path)},
+        "weights": {"checkpoint": str(checkpoint_path)},
+        "metrics": {"validation": validation_metrics, "test": test_metrics},
+        "selection": {
+            "tasks": list(selection_tasks), "metric": "mean_macro_f1", "best_epoch": best_round,
+            "best_value": best_score, "early_stopping_patience": model.params.get("early_stopping_rounds"),
+            "epochs_run": best_round, "stopped_epoch": best_round,
+        },
+    }
+    report_path = config.train.output_root / "training_report.json"
+    write_report(report_path, report)
+    print(f"training_report={report_path}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(_PROJECT_ROOT / "configs" / "qianhai7_v12_baseline.yaml"))
@@ -292,7 +413,21 @@ def main() -> None:
     print("stage=model_initialization", flush=True)
     model = build_model(config.model.name, **config.model.kwargs)
     if config.model.name == "xgboost":
-        raise ValueError("xgboost has no adapter for the v3 four-task ordinal target contract yet")
+        train_xgboost(
+            config,
+            loader,
+            validation_loader,
+            test_loader,
+            normalization,
+            splits,
+            eval_splits,
+            distribution,
+            index,
+            refs,
+            eval_stride,
+            run_clock,
+        )
+        return
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     parameter_counts = count_parameters(model)

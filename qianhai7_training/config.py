@@ -160,8 +160,6 @@ class ModelConfig:
         if self.name not in ("mlp", *SUPPORTED_MODEL_NAMES):
             choices = ", ".join(("mlp", *SUPPORTED_MODEL_NAMES))
             raise ValueError(f"Unknown model {self.name!r}; choose one of: {choices}")
-        if self.name == "xgboost":
-            raise ValueError("xgboost has no adapter for the v3 four-task ordinal target contract yet")
 
     @property
     def kwargs(self) -> dict[str, Any]:
