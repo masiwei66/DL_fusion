@@ -32,10 +32,11 @@ train:
   output_root: result_report/transformer/v1
 
 model:
-  # Temporal Transformer 使用与 LSTM/GRU 相同的聚合输入和任务输出。
+  # Temporal Transformer 使用与 LSTM/GRU 相同的节点级输入和任务输出。
   name: transformer
   params:
     input_dim: 9
+    input_mode: node
     d_model: 128
     nhead: 4
     num_layers: 2

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -88,7 +89,7 @@ class NormalizationStats:
         return cls(**payload)
 
 
-def fit_normalization_stats(refs: list[WindowRef]) -> NormalizationStats:
+def fit_normalization_stats(refs: list[WindowRef], *, progress: bool = False) -> NormalizationStats:
     """Fit statistics from unique training states only.
 
     The full 26-step FEM trajectory is used for stable statistics. Derived rolling
@@ -105,7 +106,11 @@ def fit_normalization_stats(refs: list[WindowRef]) -> NormalizationStats:
     temperature_stats = _RunningStats()
     delta_stats = _RunningStats()
     coordinate_stats = [_RunningStats(), _RunningStats()]
-    for ref in unique.values():
+    items = list(unique.values())
+    total = len(items)
+    report_every = max(1, total // 10)
+    started = time.perf_counter()
+    for index, ref in enumerate(items, start=1):
         arrays = HDF5StateSource(ref.record.path).read(cache=False)
         deck = arrays["deck_node_mask"]
         displacement = arrays["displacement_uz"][:, deck]
@@ -116,6 +121,13 @@ def fit_normalization_stats(refs: list[WindowRef]) -> NormalizationStats:
         coordinate_array = arrays["node_coords"][deck, :2]
         coordinate_stats[0].update(coordinate_array[:, 0])
         coordinate_stats[1].update(coordinate_array[:, 1])
+        if progress and (index % report_every == 0 or index == total):
+            elapsed = time.perf_counter() - started
+            print(
+                f"normalization progress={index}/{total} "
+                f"rate={index / max(elapsed, 1e-6):.1f} states_per_sec elapsed_sec={elapsed:.0f}",
+                flush=True,
+            )
     values_mean, values_std = value_stats.result()
     temperature_mean, temperature_std = temperature_stats.result()
     delta_days_mean, delta_days_std = delta_stats.result()

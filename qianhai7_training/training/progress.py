@@ -86,6 +86,11 @@ class BatchProgress:
             self._bar = None
 
     def __enter__(self) -> "BatchProgress":
+        if self._bar is None and self.mode == "log":
+            print(
+                f"{self.desc} start total={self.total or '?'}",
+                flush=True,
+            )
         return self
 
     def __exit__(self, *exc_info: object) -> None:

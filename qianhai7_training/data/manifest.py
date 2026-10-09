@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,8 +28,12 @@ class ArchiveIndex:
         return tuple(record.structural_state_id for record in self.records)
 
 
-def build_archive_index(data_root: str | Path) -> ArchiveIndex:
-    """Read manifests while keeping large HDF5 arrays lazy."""
+def build_archive_index(data_root: str | Path, *, progress: bool = False) -> ArchiveIndex:
+    """Read manifests while keeping large HDF5 arrays lazy.
+
+    ``progress`` prints about ten lines across the scan: opening thousands of
+    HDF5 files takes minutes and emits nothing otherwise, which reads as a hang.
+    """
     import h5py
 
     root = Path(data_root)
@@ -50,8 +55,12 @@ def build_archive_index(data_root: str | Path) -> ArchiveIndex:
             RuntimeWarning,
             stacklevel=2,
         )
+    paths = sorted(root.glob("qh7_state_*.h5"))
+    total = len(paths)
+    report_every = max(1, total // 10)
+    started = time.perf_counter()
     records: list[ArchiveRecord] = []
-    for path in sorted(root.glob("qh7_state_*.h5")):
+    for index, path in enumerate(paths, start=1):
         with h5py.File(path, "r") as handle:
             raw = handle["manifest_json"][()]
             if isinstance(raw, bytes):
@@ -68,6 +77,13 @@ def build_archive_index(data_root: str | Path) -> ArchiveIndex:
                 metadata=manifest,
             )
         )
+        if progress and (index % report_every == 0 or index == total):
+            elapsed = time.perf_counter() - started
+            print(
+                f"archive_index progress={index}/{total} "
+                f"rate={index / max(elapsed, 1e-6):.1f} files_per_sec elapsed_sec={elapsed:.0f}",
+                flush=True,
+            )
     if not records:
         raise FileNotFoundError(f"No qh7_state_*.h5 files found under {root}")
     return ArchiveIndex(tuple(records), run_manifest)

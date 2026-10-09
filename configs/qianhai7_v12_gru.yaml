@@ -32,10 +32,11 @@ train:
   output_root: result_report/gru/v1
 
 model:
-  # 与 LSTM/ResNet 保持相同输入、标签和四个输出头。
+  # 与 LSTM/ResNet 使用相同节点级输入、标签和四个输出头。
   name: gru
   params:
     input_dim: 9
+    input_mode: node
     hidden_size: 128
     num_layers: 2
     dropout: 0.1

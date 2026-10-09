@@ -326,7 +326,7 @@ def main() -> None:
     progress_options = {"mode": train.progress, "log_every": train.log_every_batches}
     run_clock = Stopwatch()
     stage_started = time.perf_counter()
-    index = build_archive_index(data.data_root)
+    index = build_archive_index(data.data_root, progress=train.progress != "off")
     print(f"stage=archive_index files={len(index.records)} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
     stage_started = time.perf_counter()
     refs = make_window_refs(index, data.window_length, data.stride)
@@ -349,7 +349,7 @@ def main() -> None:
     )
     print(f"stage=split train={len(splits['train'])} validation={len(splits['validation'])} test={len(splits['test'])} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
     stage_started = time.perf_counter()
-    normalization = fit_normalization_stats(splits["train"])
+    normalization = fit_normalization_stats(splits["train"], progress=train.progress != "off")
     print(f"stage=normalization states={len(normalization.fitted_state_ids)} elapsed_sec={time.perf_counter() - stage_started:.1f}", flush=True)
     normalization_path = train.output_root / "normalization_stats.json"
     normalization_path.parent.mkdir(parents=True, exist_ok=True)

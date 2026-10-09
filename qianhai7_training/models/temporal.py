@@ -8,6 +8,75 @@ from ..task_labels import TASK_CLASS_COUNT, TASK_LABEL_NAMES
 from .base import StudentModel
 
 
+def node_features(batch: WindowBatch) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build the shared node-level input contract ``[B, W, P, 9]``.
+
+    The nine channels are displacement, observation mask, quality, x/y
+    coordinates, mapping distance, mapping-valid flag, temperature and time
+    interval.  ``node_mask`` identifies real, successfully mapped points.
+    This is the default input representation for all neural baselines.
+    """
+    if batch.point_features.shape[-1] < 2:
+        raise ValueError("WindowBatch.point_features must contain x/y coordinates")
+    point_mask = batch.point_present_mask & batch.mapping_valid_mask
+    point_mask_float = point_mask.float()
+    observation_mask = batch.valid_mask & point_mask[:, None, :]
+    observation_mask_float = observation_mask.float()
+    values = batch.values * observation_mask_float
+    quality = batch.quality * observation_mask_float
+    coordinates = batch.point_features[..., :2]
+    mapping_distance = batch.mapping_distance * point_mask_float
+    mapping_valid = batch.mapping_valid_mask.float() * point_mask_float
+    time_features = batch.time_features * batch.temperature_valid_mask.float()
+
+    _, window_length, point_count = batch.values.shape
+    coordinate_sequence = coordinates[:, None, :, :].expand(-1, window_length, -1, -1)
+    mapping_distance_sequence = mapping_distance[:, None, :, None].expand(
+        -1, window_length, -1, -1
+    )
+    mapping_valid_sequence = mapping_valid[:, None, :, None].expand(
+        -1, window_length, -1, -1
+    )
+    time_sequence = time_features[:, :, None, :].expand(-1, -1, point_count, -1)
+    features = torch.cat(
+        [
+            values.unsqueeze(-1),
+            observation_mask_float.unsqueeze(-1),
+            quality.unsqueeze(-1),
+            coordinate_sequence,
+            mapping_distance_sequence,
+            mapping_valid_sequence,
+            time_sequence,
+        ],
+        dim=-1,
+    )
+    if features.shape[-1] != 9:
+        raise RuntimeError(f"shared node feature contract must have 9 channels, got {features.shape[-1]}")
+    return features, point_mask
+
+
+def pool_node_features(features: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+    """Pool shared node features to ``[B, W, 9]`` for non-graph baselines.
+
+    The model boundary still receives the common ``[B, W, P, 9]`` contract.
+    Pooling before a temporal encoder keeps the baseline cost independent of
+    ``P`` while the GNN model can replace this operation with graph message
+    passing.  This is the fair no-graph counterpart to GNN-LSTM.
+    """
+    mask = node_mask[:, None, :, None].to(features.dtype)
+    denominator = mask.sum(dim=2).clamp_min(1.0)
+    return (features * mask).sum(dim=2) / denominator
+
+
+def _pool_node_representations(
+    representations: torch.Tensor, node_mask: torch.Tensor
+) -> torch.Tensor:
+    """Pool ``[B, P, H]`` node representations into ``[B, H]``."""
+    mask = node_mask.float().unsqueeze(-1)
+    denominator = mask.sum(dim=1).clamp_min(1.0)
+    return (representations * mask).sum(dim=1) / denominator
+
+
 def temporal_features(batch: WindowBatch) -> torch.Tensor:
     """Convert the variable-point contract to fixed-width [B, W, F] features.
 
@@ -58,9 +127,15 @@ class TemporalHead(nn.Module):
 
 class LSTMModel(StudentModel):
     def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
-                 dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True):
+                 dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True,
+                 input_mode: str = "node"):
         super().__init__()
+        if input_mode not in {"node", "regional"}:
+            raise ValueError("input_mode must be 'node' or 'regional'")
+        if input_mode == "node" and input_dim != 9:
+            raise ValueError("node input_mode requires input_dim=9")
         self.input_dim = input_dim
+        self.input_mode = input_mode
         self.encoder = nn.LSTM(
             input_size=input_dim, hidden_size=hidden_size, num_layers=num_layers,
             batch_first=True, dropout=dropout if num_layers > 1 else 0.0,
@@ -70,7 +145,16 @@ class LSTMModel(StudentModel):
         self.head = TemporalHead(input_dim, output_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        sequence = temporal_features(batch)
+        if self.input_mode == "regional":
+            sequence = temporal_features(batch)
+            encoded, _ = self.encoder(sequence)
+            valid_time = batch.temperature_valid_mask.squeeze(-1).float()
+            lengths = valid_time.sum(dim=1).long().clamp_min(1)
+            representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
+            return self.head.outputs(representation)
+
+        features, node_mask = node_features(batch)
+        sequence = pool_node_features(features, node_mask)
         encoded, _ = self.encoder(sequence)
         valid_time = batch.temperature_valid_mask.squeeze(-1).float()
         lengths = valid_time.sum(dim=1).long().clamp_min(1)
@@ -82,9 +166,15 @@ class GRUModel(StudentModel):
     """GRU temporal baseline using the same input and regional heads as LSTM."""
 
     def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
-                 dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True):
+                 dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True,
+                 input_mode: str = "node"):
         super().__init__()
+        if input_mode not in {"node", "regional"}:
+            raise ValueError("input_mode must be 'node' or 'regional'")
+        if input_mode == "node" and input_dim != 9:
+            raise ValueError("node input_mode requires input_dim=9")
         self.input_dim = input_dim
+        self.input_mode = input_mode
         self.encoder = nn.GRU(
             input_size=input_dim, hidden_size=hidden_size, num_layers=num_layers,
             batch_first=True, dropout=dropout if num_layers > 1 else 0.0,
@@ -94,7 +184,16 @@ class GRUModel(StudentModel):
         self.head = TemporalHead(input_dim, output_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        sequence = temporal_features(batch)
+        if self.input_mode == "regional":
+            sequence = temporal_features(batch)
+            encoded, _ = self.encoder(sequence)
+            valid_time = batch.temperature_valid_mask.squeeze(-1).float()
+            lengths = valid_time.sum(dim=1).long().clamp_min(1)
+            representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
+            return self.head.outputs(representation)
+
+        features, node_mask = node_features(batch)
+        sequence = pool_node_features(features, node_mask)
         encoded, _ = self.encoder(sequence)
         valid_time = batch.temperature_valid_mask.squeeze(-1).float()
         lengths = valid_time.sum(dim=1).long().clamp_min(1)
@@ -114,11 +213,17 @@ class TemporalTransformerModel(StudentModel):
         dim_feedforward: int = 256,
         dropout: float = 0.1,
         regional_targets: bool = True,
+        input_mode: str = "node",
     ):
         super().__init__()
+        if input_mode not in {"node", "regional"}:
+            raise ValueError("input_mode must be 'node' or 'regional'")
+        if input_mode == "node" and input_dim != 9:
+            raise ValueError("node input_mode requires input_dim=9")
         if d_model % nhead != 0:
             raise ValueError("d_model must be divisible by nhead")
         self.input_dim = int(input_dim)
+        self.input_mode = input_mode
         self.input_projection = nn.Linear(input_dim, d_model)
         self.position_embedding = nn.Parameter(torch.zeros(1, 512, d_model))
         nn.init.normal_(self.position_embedding, mean=0.0, std=0.02)
@@ -134,7 +239,24 @@ class TemporalTransformerModel(StudentModel):
         self.head = TemporalHead(input_dim, d_model, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        sequence = temporal_features(batch)
+        if self.input_mode == "regional":
+            sequence = temporal_features(batch)
+            if sequence.shape[1] > self.position_embedding.shape[1]:
+                raise ValueError("window length exceeds configured positional embedding capacity")
+            sequence = self.input_projection(sequence)
+            sequence = sequence + self.position_embedding[:, :sequence.shape[1]]
+            padding_mask = ~batch.temperature_valid_mask.squeeze(-1).bool()
+            empty = padding_mask.all(dim=1)
+            if empty.any():
+                padding_mask = padding_mask.clone()
+                padding_mask[empty, 0] = False
+            encoded = self.encoder(sequence, src_key_padding_mask=padding_mask)
+            valid_lengths = (~padding_mask).sum(dim=1).clamp_min(1)
+            representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), valid_lengths - 1]
+            return self.head.outputs(representation)
+
+        features, node_mask = node_features(batch)
+        sequence = pool_node_features(features, node_mask)
         if sequence.shape[1] > self.position_embedding.shape[1]:
             raise ValueError("window length exceeds configured positional embedding capacity")
         sequence = self.input_projection(sequence)
@@ -166,9 +288,13 @@ class ResNet50_1DModel(StudentModel):
         regional_targets: bool = True,
         layers: tuple[int, int, int, int] = (3, 4, 6, 3),
         stage_strides: tuple[int, int, int, int] = (1, 1, 1, 1),
+        input_mode: str = "node",
     ):
         super().__init__()
+        if input_mode not in {"node", "regional"}:
+            raise ValueError("input_mode must be 'node' or 'regional'")
         self.input_dim = int(input_dim)
+        self.input_mode = input_mode
         self.base_width = int(base_width)
         self.layers = tuple(int(count) for count in layers)
         self.stage_strides = tuple(int(stride) for stride in stage_strides)
@@ -198,7 +324,13 @@ class ResNet50_1DModel(StudentModel):
         self.head = TemporalHead(self.input_dim, self.representation_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        sequence = temporal_features(batch).transpose(1, 2)
+        if self.input_mode == "regional":
+            sequence = temporal_features(batch).transpose(1, 2)
+            representation = self.pool(self.stages(self.stem(sequence))).squeeze(-1)
+            return self.head.outputs(representation)
+
+        features, node_mask = node_features(batch)
+        sequence = pool_node_features(features, node_mask).transpose(1, 2)
         representation = self.pool(self.stages(self.stem(sequence))).squeeze(-1)
         return self.head.outputs(representation)
 

@@ -5,7 +5,7 @@ from torch import nn
 
 from ..contracts import WindowBatch
 from .base import StudentModel
-from .temporal import TemporalHead
+from .temporal import TemporalHead, node_features
 
 
 def _build_knn_adjacency(
@@ -149,43 +149,8 @@ class GCNLSTMModel(StudentModel):
 
     @staticmethod
     def _node_features(batch: WindowBatch) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return [B, W, P, 9] features and the static valid-node mask."""
-        if batch.point_features.shape[-1] < 2:
-            raise ValueError("WindowBatch.point_features must contain x/y coordinates")
-        point_mask = batch.point_present_mask & batch.mapping_valid_mask
-        point_mask_float = point_mask.float()
-        observation_mask = batch.valid_mask & point_mask[:, None, :]
-        observation_mask_float = observation_mask.float()
-        values = batch.values * observation_mask_float
-        quality = batch.quality * observation_mask_float
-        coordinates = batch.point_features[..., :2]
-        mapping_distance = batch.mapping_distance * point_mask_float
-        mapping_valid = batch.mapping_valid_mask.float() * point_mask_float
-        time_mask = batch.temperature_valid_mask.float()
-        time_features = batch.time_features * time_mask
-
-        _, window_length, point_count = batch.values.shape
-        coordinate_sequence = coordinates[:, None, :, :].expand(-1, window_length, -1, -1)
-        mapping_distance_sequence = mapping_distance[:, None, :, None].expand(
-            -1, window_length, -1, -1
-        )
-        mapping_valid_sequence = mapping_valid[:, None, :, None].expand(
-            -1, window_length, -1, -1
-        )
-        time_sequence = time_features[:, :, None, :].expand(-1, -1, point_count, -1)
-        features = torch.cat(
-            [
-                values.unsqueeze(-1),
-                observation_mask_float.unsqueeze(-1),
-                quality.unsqueeze(-1),
-                coordinate_sequence,
-                mapping_distance_sequence,
-                mapping_valid_sequence,
-                time_sequence,
-            ],
-            dim=-1,
-        )
-        return features, point_mask
+        """Return the shared ``[B, W, P, 9]`` node features."""
+        return node_features(batch)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
         features, node_mask = self._node_features(batch)

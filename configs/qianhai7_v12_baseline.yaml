@@ -1,7 +1,7 @@
 data:
-  data_root: E:/working/DL_data/qianhai7
+  data_root: E:/working/DL_data/test
   window_length: 6
-  stride: 1
+  stride: 6
   eval_stride: 6
   virtual_point_count_min: 50
   virtual_point_count_max: 100
@@ -33,13 +33,14 @@ train:
   # Faster host->GPU copies. On a CPU-only torch build this is ignored (warning at most).
   pin_memory: true
 
-model:
-  # Change this name to switch the experiment after the corresponding model is implemented.
-  # choices: mlp, xgboost, resnet50_1d, resnet1d, lstm, gru, transformer, gnn_lstm
 
+
+model:
+  # 默认使用共享节点级输入 [B, W, P, 9]；input_mode: regional 可用于消融。
   name: lstm
   params:
     input_dim: 9
+    input_mode: node
     hidden_size: 128
     num_layers: 2
     dropout: 0.1
