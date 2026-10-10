@@ -32,10 +32,11 @@ train:
   output_root: result_report/lstm/v1
 
 model:
-  # 默认使用共享节点级输入 [B, W, P, 9]；input_mode: regional 可用于消融。
+  # 默认使用共享节点级输入 [B, W, P, 6]；input_mode: regional 可用于消融。
   name: lstm
   params:
-    input_dim: 9
+    # node(逐点) 编码器输入 6 通道；切 pooled/regional 消融时改为 9。
+    input_dim: 6
     input_mode: node
     hidden_size: 128
     num_layers: 2

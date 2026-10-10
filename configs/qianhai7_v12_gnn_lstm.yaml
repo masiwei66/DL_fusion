@@ -34,7 +34,8 @@ train:
 model:
   name: gnn_lstm
   params:
-    node_input_dim: 9
+    # 共享节点契约的通道数（位移、观测掩码、x、y、温度、Δt）。
+    node_input_dim: 6
     graph_hidden_dim: 64
     lstm_hidden_size: 128
     graph_layers: 2

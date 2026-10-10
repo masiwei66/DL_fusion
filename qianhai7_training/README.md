@@ -31,12 +31,16 @@ configs/
   qianhai7_v12_baseline.yaml
 ```
 
-The important seam is `WindowBatch`: the neural comparison models consume the same
-node-level feature contract `[B, W, P, 9]`. LSTM/GRU/Transformer/ResNet apply a
-masked, no-graph node pooling operation before their temporal encoder; GNN-LSTM
-instead propagates information over the coordinate kNN graph before pooling.
-The regional-statistics adapter remains available through `input_mode: regional`
-for ablation studies.
+The important seam is `WindowBatch`. Every neural comparison model consumes the
+same node-level contract `[B, W, P, 6]` built by `node_features` (displacement,
+observation mask, x/y coordinates, temperature, time interval). LSTM/GRU/
+Transformer/ResNet fold the point axis into the batch axis, encode each point's
+own temporal sequence with the same architecture, and reduce the points with a
+shared masked mean; GNN-LSTM instead propagates information over the coordinate
+kNN graph before that reduction. Two aggregate inputs remain available for
+ablation: `input_mode: pooled` (mean/std/min/max over the observed points) and
+`input_mode: regional` (the legacy hand-made statistics). The encoder width
+follows the mode: 6 for `node`, 9 for `pooled`/`regional`.
 
 ```powershell
 python -m qianhai7_training.cli.audit_dataset --data-root E:\working\DL_data\qianhai7_yearly_temperature_dataset_v3_final

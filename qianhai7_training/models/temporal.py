@@ -8,80 +8,101 @@ from ..task_labels import TASK_CLASS_COUNT, TASK_LABEL_NAMES
 from .base import StudentModel
 
 
-def node_features(batch: WindowBatch) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build the shared node-level input contract ``[B, W, P, 9]``.
+# The shared per-node observation contract. ``node_features`` returns
+# ``[B, W, P, NODE_FEATURE_DIM]`` with this fixed channel order:
+#
+#   0 displacement       normalised vertical displacement, 0 where missing
+#   1 observation mask   1.0 where a real observation exists at (t, point)
+#   2 x coordinate       normalised deck coordinate of that point
+#   3 y coordinate       normalised deck coordinate of that point
+#   4 temperature_C      normalised air temperature at that acquisition
+#   5 delta_days         normalised interval since the previous acquisition
+#
+# Every neural model sees exactly these channels in this order. Model-specific
+# feature engineering must not happen outside this function, otherwise the
+# comparison between architectures stops being apples-to-apples.
+NODE_FEATURE_DIM = 6
 
-    The nine channels are displacement, observation mask, quality, x/y
-    coordinates, mapping distance, mapping-valid flag, temperature and time
-    interval.  ``node_mask`` identifies real, successfully mapped points.
-    This is the default input representation for all neural baselines.
+
+def node_features(batch: WindowBatch) -> tuple[torch.Tensor, torch.Tensor]:
+    """Build the shared node-level input contract ``[B, W, P, 6]``.
+
+    ``node_mask`` identifies real, successfully mapped points.  Observation
+    quality and mapping distance/validity are deliberately not channels: quality
+    is identical to the observation mask, and both mapping quantities are
+    constant over the mapped points that reach the model.
     """
     if batch.point_features.shape[-1] < 2:
         raise ValueError("WindowBatch.point_features must contain x/y coordinates")
     point_mask = batch.point_present_mask & batch.mapping_valid_mask
-    point_mask_float = point_mask.float()
     observation_mask = batch.valid_mask & point_mask[:, None, :]
     observation_mask_float = observation_mask.float()
     values = batch.values * observation_mask_float
-    quality = batch.quality * observation_mask_float
     coordinates = batch.point_features[..., :2]
-    mapping_distance = batch.mapping_distance * point_mask_float
-    mapping_valid = batch.mapping_valid_mask.float() * point_mask_float
     time_features = batch.time_features * batch.temperature_valid_mask.float()
 
     _, window_length, point_count = batch.values.shape
     coordinate_sequence = coordinates[:, None, :, :].expand(-1, window_length, -1, -1)
-    mapping_distance_sequence = mapping_distance[:, None, :, None].expand(
-        -1, window_length, -1, -1
-    )
-    mapping_valid_sequence = mapping_valid[:, None, :, None].expand(
-        -1, window_length, -1, -1
-    )
     time_sequence = time_features[:, :, None, :].expand(-1, -1, point_count, -1)
     features = torch.cat(
         [
             values.unsqueeze(-1),
             observation_mask_float.unsqueeze(-1),
-            quality.unsqueeze(-1),
             coordinate_sequence,
-            mapping_distance_sequence,
-            mapping_valid_sequence,
             time_sequence,
         ],
         dim=-1,
     )
-    if features.shape[-1] != 9:
-        raise RuntimeError(f"shared node feature contract must have 9 channels, got {features.shape[-1]}")
+    if features.shape[-1] != NODE_FEATURE_DIM:
+        raise RuntimeError(
+            f"shared node feature contract must have {NODE_FEATURE_DIM} channels, "
+            f"got {features.shape[-1]}"
+        )
     return features, point_mask
 
 
+# Width of the pooled [B, W, F] contract produced by ``pool_node_features``:
+# four displacement summaries plus the remaining node channels.
+POOLED_NODE_FEATURE_DIM = 4 + NODE_FEATURE_DIM - 1
+
+
 def pool_node_features(features: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
-    """Pool shared node features to ``[B, W, 9]`` for non-graph baselines.
+    """Pool shared node features to ``[B, W, 9]``, the no-point-set ablation.
 
-    The model boundary still receives the common ``[B, W, P, 9]`` contract.
-    Pooling before a temporal encoder keeps the baseline cost independent of
-    ``P`` while the GNN model can replace this operation with graph message
-    passing.  This is the fair no-graph counterpart to GNN-LSTM.
+    Displacement is summarised as mean/std/min/max over the *observed* points
+    only, so a missing sample is excluded instead of being averaged in as a zero
+    displacement.  The remaining node channels are averaged over the mapped
+    points.  This collapses the point axis before the encoder, so it is the
+    "what if the model cannot see the point set" counterpart of the per-point
+    ``node`` path.
     """
-    mask = node_mask[:, None, :, None].to(features.dtype)
-    denominator = mask.sum(dim=2).clamp_min(1.0)
-    return (features * mask).sum(dim=2) / denominator
+    point_mask = node_mask[:, None, :].to(features.dtype)
+    observation_mask = features[..., 1] * point_mask
+    point_denominator = point_mask.sum(dim=2, keepdim=True).clamp_min(1.0)
+    observation_denominator = observation_mask.sum(dim=2, keepdim=True).clamp_min(1.0)
 
+    displacement = features[..., 0]
+    mean = (displacement * observation_mask).sum(dim=2, keepdim=True) / observation_denominator
+    centered = (displacement - mean) * observation_mask
+    std = (centered.square().sum(dim=2, keepdim=True) / observation_denominator).clamp_min(0.0).sqrt()
+    missing = observation_mask == 0
+    minimum = displacement.masked_fill(missing, float("inf")).amin(dim=2, keepdim=True)
+    maximum = displacement.masked_fill(missing, float("-inf")).amax(dim=2, keepdim=True)
+    minimum = torch.where(torch.isfinite(minimum), minimum, torch.zeros_like(minimum))
+    maximum = torch.where(torch.isfinite(maximum), maximum, torch.zeros_like(maximum))
 
-def _pool_node_representations(
-    representations: torch.Tensor, node_mask: torch.Tensor
-) -> torch.Tensor:
-    """Pool ``[B, P, H]`` node representations into ``[B, H]``."""
-    mask = node_mask.float().unsqueeze(-1)
-    denominator = mask.sum(dim=1).clamp_min(1.0)
-    return (representations * mask).sum(dim=1) / denominator
+    others = [
+        (features[..., index] * point_mask).sum(dim=2, keepdim=True) / point_denominator
+        for index in range(1, features.shape[-1])
+    ]
+    return torch.cat([mean, std, minimum, maximum, *others], dim=-1)
 
 
 def temporal_features(batch: WindowBatch) -> torch.Tensor:
-    """Convert the variable-point contract to fixed-width [B, W, F] features.
+    """Legacy regional adapter: [B, W, 9] hand-made aggregate statistics.
 
-    The normalized mean x/y coordinates are static over the window and are
-    repeated across time so the temporal encoder can use absolute location.
+    Kept only as an ablation input so a report can show what changes when the
+    point set is replaced by fixed summary statistics.
     """
     mask = (batch.valid_mask & batch.point_present_mask[:, None, :]).float()
     values = batch.values
@@ -108,6 +129,88 @@ def temporal_features(batch: WindowBatch) -> torch.Tensor:
     return torch.cat([mean, std, minimum, maximum, valid_ratio, time, coordinate_sequence], dim=-1)
 
 
+REGIONAL_FEATURE_DIM = 9
+
+# Encoder input width implied by each ``input_mode``. The per-point ``node``
+# path feeds the raw contract channels; the two aggregate paths substitute a
+# fixed-width summary vector.
+ENCODER_INPUT_CHANNELS = {
+    "node": NODE_FEATURE_DIM,
+    "pooled": POOLED_NODE_FEATURE_DIM,
+    "regional": REGIONAL_FEATURE_DIM,
+}
+
+
+def expected_input_dim(input_mode: str) -> int:
+    if input_mode not in ENCODER_INPUT_CHANNELS:
+        choices = ", ".join(ENCODER_INPUT_CHANNELS)
+        raise ValueError(f"input_mode must be one of: {choices}")
+    return ENCODER_INPUT_CHANNELS[input_mode]
+
+
+def valid_time_lengths(batch: WindowBatch) -> torch.Tensor:
+    """Number of acquisitions with valid time metadata, per sample."""
+    return batch.temperature_valid_mask.squeeze(-1).bool().sum(dim=1).long().clamp_min(1)
+
+
+def last_valid_token(encoded: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    positions = torch.arange(encoded.shape[0], device=encoded.device)
+    return encoded[positions, lengths - 1]
+
+
+def flatten_node_sequences(features: torch.Tensor, batch: WindowBatch) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fold the point axis into the batch axis: ``[B, W, P, F] -> [B*P, W, F]``.
+
+    Every point becomes an independent temporal sequence that keeps its own
+    displacement, coordinates and time metadata.  The point axis is folded back
+    by :func:`pool_node_representations` after encoding.
+    """
+    batch_size, window_length, point_count, feature_dim = features.shape
+    sequence = features.permute(0, 2, 1, 3).reshape(batch_size * point_count, window_length, feature_dim)
+    return sequence, valid_time_lengths(batch).repeat_interleave(point_count, dim=0)
+
+
+def pool_node_representations(representations: torch.Tensor, node_mask: torch.Tensor) -> torch.Tensor:
+    """Masked mean over the point axis: ``[B, P, H] -> [B, H]``.
+
+    Padded and unmapped points contribute nothing because ``node_mask`` is zero
+    for them.
+    """
+    mask = node_mask.float().unsqueeze(-1)
+    return (representations * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+
+
+def pool_points(representation: torch.Tensor, node_mask: torch.Tensor | None, batch: WindowBatch) -> torch.Tensor:
+    """Undo the point-axis fold for ``node`` mode; identity for the others."""
+    if node_mask is None:
+        return representation
+    return pool_node_representations(
+        representation.reshape(batch.batch_size, batch.point_capacity, -1), node_mask
+    )
+
+
+def encoder_sequence(batch: WindowBatch, input_mode: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Build the tensor a neural encoder consumes, for one ``input_mode``.
+
+    Returns ``(sequence, lengths, time_valid, node_mask)``.  ``sequence`` is
+    ``[B, W, F]`` for the aggregate modes and ``[B*P, W, F]`` for the per-point
+    ``node`` mode; ``node_mask`` is not None only for ``node``, where the point
+    axis has to be pooled back after encoding.
+    """
+    time_valid = batch.temperature_valid_mask.squeeze(-1).bool()
+    if input_mode == "node":
+        features, node_mask = node_features(batch)
+        sequence, lengths = flatten_node_sequences(features, batch)
+        return sequence, lengths, time_valid.repeat_interleave(batch.point_capacity, dim=0), node_mask
+    if input_mode == "pooled":
+        features, node_mask = node_features(batch)
+        return pool_node_features(features, node_mask), valid_time_lengths(batch), time_valid, None
+    if input_mode == "regional":
+        return temporal_features(batch), valid_time_lengths(batch), time_valid, None
+    choices = ", ".join(ENCODER_INPUT_CHANNELS)
+    raise ValueError(f"input_mode must be one of: {choices}")
+
+
 class TemporalHead(nn.Module):
     def __init__(self, input_dim: int, representation_dim: int, regional_targets: bool = True):
         super().__init__()
@@ -126,14 +229,13 @@ class TemporalHead(nn.Module):
 
 
 class LSTMModel(StudentModel):
-    def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
+    def __init__(self, input_dim: int = NODE_FEATURE_DIM, hidden_size: int = 128, num_layers: int = 2,
                  dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True,
                  input_mode: str = "node"):
         super().__init__()
-        if input_mode not in {"node", "regional"}:
-            raise ValueError("input_mode must be 'node' or 'regional'")
-        if input_mode == "node" and input_dim != 9:
-            raise ValueError("node input_mode requires input_dim=9")
+        expected = expected_input_dim(input_mode)
+        if input_dim != expected:
+            raise ValueError(f"input_mode={input_mode!r} requires input_dim={expected}")
         self.input_dim = input_dim
         self.input_mode = input_mode
         self.encoder = nn.LSTM(
@@ -145,34 +247,22 @@ class LSTMModel(StudentModel):
         self.head = TemporalHead(input_dim, output_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        if self.input_mode == "regional":
-            sequence = temporal_features(batch)
-            encoded, _ = self.encoder(sequence)
-            valid_time = batch.temperature_valid_mask.squeeze(-1).float()
-            lengths = valid_time.sum(dim=1).long().clamp_min(1)
-            representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
-            return self.head.outputs(representation)
-
-        features, node_mask = node_features(batch)
-        sequence = pool_node_features(features, node_mask)
+        sequence, lengths, _, node_mask = encoder_sequence(batch, self.input_mode)
         encoded, _ = self.encoder(sequence)
-        valid_time = batch.temperature_valid_mask.squeeze(-1).float()
-        lengths = valid_time.sum(dim=1).long().clamp_min(1)
-        representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
-        return self.head.outputs(representation)
+        representation = last_valid_token(encoded, lengths)
+        return self.head.outputs(pool_points(representation, node_mask, batch))
 
 
 class GRUModel(StudentModel):
-    """GRU temporal baseline using the same input and regional heads as LSTM."""
+    """GRU temporal baseline using the same input contract as LSTM."""
 
-    def __init__(self, input_dim: int = 9, hidden_size: int = 128, num_layers: int = 2,
+    def __init__(self, input_dim: int = NODE_FEATURE_DIM, hidden_size: int = 128, num_layers: int = 2,
                  dropout: float = 0.1, bidirectional: bool = False, regional_targets: bool = True,
                  input_mode: str = "node"):
         super().__init__()
-        if input_mode not in {"node", "regional"}:
-            raise ValueError("input_mode must be 'node' or 'regional'")
-        if input_mode == "node" and input_dim != 9:
-            raise ValueError("node input_mode requires input_dim=9")
+        expected = expected_input_dim(input_mode)
+        if input_dim != expected:
+            raise ValueError(f"input_mode={input_mode!r} requires input_dim={expected}")
         self.input_dim = input_dim
         self.input_mode = input_mode
         self.encoder = nn.GRU(
@@ -184,29 +274,18 @@ class GRUModel(StudentModel):
         self.head = TemporalHead(input_dim, output_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        if self.input_mode == "regional":
-            sequence = temporal_features(batch)
-            encoded, _ = self.encoder(sequence)
-            valid_time = batch.temperature_valid_mask.squeeze(-1).float()
-            lengths = valid_time.sum(dim=1).long().clamp_min(1)
-            representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
-            return self.head.outputs(representation)
-
-        features, node_mask = node_features(batch)
-        sequence = pool_node_features(features, node_mask)
+        sequence, lengths, _, node_mask = encoder_sequence(batch, self.input_mode)
         encoded, _ = self.encoder(sequence)
-        valid_time = batch.temperature_valid_mask.squeeze(-1).float()
-        lengths = valid_time.sum(dim=1).long().clamp_min(1)
-        representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), lengths - 1]
-        return self.head.outputs(representation)
+        representation = last_valid_token(encoded, lengths)
+        return self.head.outputs(pool_points(representation, node_mask, batch))
 
 
 class TemporalTransformerModel(StudentModel):
-    """Transformer encoder baseline over the existing aggregated time features."""
+    """Transformer encoder over the shared observation contract."""
 
     def __init__(
         self,
-        input_dim: int = 9,
+        input_dim: int = NODE_FEATURE_DIM,
         d_model: int = 128,
         nhead: int = 4,
         num_layers: int = 2,
@@ -216,10 +295,9 @@ class TemporalTransformerModel(StudentModel):
         input_mode: str = "node",
     ):
         super().__init__()
-        if input_mode not in {"node", "regional"}:
-            raise ValueError("input_mode must be 'node' or 'regional'")
-        if input_mode == "node" and input_dim != 9:
-            raise ValueError("node input_mode requires input_dim=9")
+        expected = expected_input_dim(input_mode)
+        if input_dim != expected:
+            raise ValueError(f"input_mode={input_mode!r} requires input_dim={expected}")
         if d_model % nhead != 0:
             raise ValueError("d_model must be divisible by nhead")
         self.input_dim = int(input_dim)
@@ -239,38 +317,20 @@ class TemporalTransformerModel(StudentModel):
         self.head = TemporalHead(input_dim, d_model, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        if self.input_mode == "regional":
-            sequence = temporal_features(batch)
-            if sequence.shape[1] > self.position_embedding.shape[1]:
-                raise ValueError("window length exceeds configured positional embedding capacity")
-            sequence = self.input_projection(sequence)
-            sequence = sequence + self.position_embedding[:, :sequence.shape[1]]
-            padding_mask = ~batch.temperature_valid_mask.squeeze(-1).bool()
-            empty = padding_mask.all(dim=1)
-            if empty.any():
-                padding_mask = padding_mask.clone()
-                padding_mask[empty, 0] = False
-            encoded = self.encoder(sequence, src_key_padding_mask=padding_mask)
-            valid_lengths = (~padding_mask).sum(dim=1).clamp_min(1)
-            representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), valid_lengths - 1]
-            return self.head.outputs(representation)
-
-        features, node_mask = node_features(batch)
-        sequence = pool_node_features(features, node_mask)
+        sequence, _, time_valid, node_mask = encoder_sequence(batch, self.input_mode)
         if sequence.shape[1] > self.position_embedding.shape[1]:
             raise ValueError("window length exceeds configured positional embedding capacity")
         sequence = self.input_projection(sequence)
         sequence = sequence + self.position_embedding[:, :sequence.shape[1]]
-        padding_mask = ~batch.temperature_valid_mask.squeeze(-1).bool()
+        padding_mask = ~time_valid
         # Keep one token unmasked for samples whose time metadata is entirely missing.
         empty = padding_mask.all(dim=1)
         if empty.any():
             padding_mask = padding_mask.clone()
             padding_mask[empty, 0] = False
         encoded = self.encoder(sequence, src_key_padding_mask=padding_mask)
-        valid_lengths = (~padding_mask).sum(dim=1).clamp_min(1)
-        representation = encoded[torch.arange(encoded.shape[0], device=encoded.device), valid_lengths - 1]
-        return self.head.outputs(representation)
+        representation = last_valid_token(encoded, (~padding_mask).sum(dim=1).clamp_min(1))
+        return self.head.outputs(pool_points(representation, node_mask, batch))
 
 
 class ResNet50_1DModel(StudentModel):
@@ -283,7 +343,7 @@ class ResNet50_1DModel(StudentModel):
 
     def __init__(
         self,
-        input_dim: int = 9,
+        input_dim: int = NODE_FEATURE_DIM,
         base_width: int = 32,
         regional_targets: bool = True,
         layers: tuple[int, int, int, int] = (3, 4, 6, 3),
@@ -291,8 +351,9 @@ class ResNet50_1DModel(StudentModel):
         input_mode: str = "node",
     ):
         super().__init__()
-        if input_mode not in {"node", "regional"}:
-            raise ValueError("input_mode must be 'node' or 'regional'")
+        expected = expected_input_dim(input_mode)
+        if input_dim != expected:
+            raise ValueError(f"input_mode={input_mode!r} requires input_dim={expected}")
         self.input_dim = int(input_dim)
         self.input_mode = input_mode
         self.base_width = int(base_width)
@@ -302,8 +363,6 @@ class ResNet50_1DModel(StudentModel):
             raise ValueError("ResNet-50 1D requires four stage depths, e.g. [3, 4, 6, 3]")
         if len(self.stage_strides) != 4 or any(stride not in (1, 2) for stride in self.stage_strides):
             raise ValueError("stage_strides must contain four values, each 1 or 2")
-        if self.input_dim != 9:
-            raise ValueError("temporal_features currently produces exactly 9 input channels")
         if self.base_width < 1 or any(count < 1 for count in self.layers):
             raise ValueError("base_width and every ResNet stage depth must be positive")
 
@@ -324,15 +383,9 @@ class ResNet50_1DModel(StudentModel):
         self.head = TemporalHead(self.input_dim, self.representation_dim, regional_targets)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
-        if self.input_mode == "regional":
-            sequence = temporal_features(batch).transpose(1, 2)
-            representation = self.pool(self.stages(self.stem(sequence))).squeeze(-1)
-            return self.head.outputs(representation)
-
-        features, node_mask = node_features(batch)
-        sequence = pool_node_features(features, node_mask).transpose(1, 2)
-        representation = self.pool(self.stages(self.stem(sequence))).squeeze(-1)
-        return self.head.outputs(representation)
+        sequence, _, _, node_mask = encoder_sequence(batch, self.input_mode)
+        representation = self.pool(self.stages(self.stem(sequence.transpose(1, 2)))).squeeze(-1)
+        return self.head.outputs(pool_points(representation, node_mask, batch))
 
 
 # Keep the original registry name working while exposing an explicit name for

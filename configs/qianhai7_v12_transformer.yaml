@@ -35,7 +35,8 @@ model:
   # Temporal Transformer 使用与 LSTM/GRU 相同的节点级输入和任务输出。
   name: transformer
   params:
-    input_dim: 9
+    # node(逐点) 编码器输入 6 通道；切 pooled/regional 消融时改为 9。
+    input_dim: 6
     input_mode: node
     d_model: 128
     nhead: 4

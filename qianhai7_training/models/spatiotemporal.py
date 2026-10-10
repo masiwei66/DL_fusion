@@ -5,7 +5,7 @@ from torch import nn
 
 from ..contracts import WindowBatch
 from .base import StudentModel
-from .temporal import TemporalHead, node_features
+from .temporal import NODE_FEATURE_DIM, TemporalHead, node_features
 
 
 def _build_knn_adjacency(
@@ -95,7 +95,7 @@ class GCNLSTMModel(StudentModel):
 
     def __init__(
         self,
-        node_input_dim: int = 9,
+        node_input_dim: int = NODE_FEATURE_DIM,
         graph_hidden_dim: int = 64,
         lstm_hidden_size: int = 128,
         graph_layers: int = 2,
@@ -107,9 +107,9 @@ class GCNLSTMModel(StudentModel):
         regional_targets: bool = True,
     ):
         super().__init__()
-        if node_input_dim != 9:
+        if node_input_dim != NODE_FEATURE_DIM:
             raise ValueError(
-                "The current WindowBatch adapter produces exactly 9 GCN node features"
+                f"The shared node contract produces exactly {NODE_FEATURE_DIM} GCN node features"
             )
         if graph_hidden_dim < 1 or lstm_hidden_size < 1:
             raise ValueError("graph_hidden_dim and lstm_hidden_size must be positive")
@@ -149,7 +149,7 @@ class GCNLSTMModel(StudentModel):
 
     @staticmethod
     def _node_features(batch: WindowBatch) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return the shared ``[B, W, P, 9]`` node features."""
+        """Return the shared ``[B, W, P, 6]`` node features."""
         return node_features(batch)
 
     def forward_batch(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
