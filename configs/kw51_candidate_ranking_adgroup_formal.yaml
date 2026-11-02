@@ -1,0 +1,81 @@
+task: kw51_candidate_ranking
+input_mode: region
+
+data:
+  data_root: E:/working/KW51_data/outputs/fem_archive_v2_merged
+  dataset_kind: kw51
+  ranking_target: ad_group
+  ad_group_parameter: Ad_rel
+  ad_group_count: 5
+  gallery_exclusion: query_state
+  diagnostic_only: false
+  split_mode: ad_group_stratified
+  window_length: 26
+  stride: 1
+  eval_stride: 1
+  pair_realizations: 2
+  candidate_pool_scope: split
+  gallery_trajectory_fraction: 0.60
+  train_query_trajectory_fraction: 0.20
+  validation_query_trajectory_fraction: 0.10
+  test_query_trajectory_fraction: 0.10
+  trajectory_split_seed: 20261015
+  region_grid_size_m: 10.0
+  coordinate_scale_to_m: 1.0
+  sparse_point_count: 80
+  min_points_per_region: 1
+  los_vector: [-0.534, -0.105, 0.839]
+  reference_mode: region_mean
+  unit_scale: 1000.0
+  noise_std_mm: 0.05
+  point_bias_std_mm: 0.01
+  missing_probability: 0.0
+  block_dropout_probability: 0.0
+  block_dropout_fraction: 0.15
+  min_quality: 0.05
+  normalization_scope: per_region_offset
+  normalization_records_per_state: 10
+  normalization_max_records: 512
+  time_feature_mode: disabled
+  learnability_audit: true
+  audit_abort_on_fail: true
+  audit_min_oracle_group_accuracy: 0.9
+  audit_min_signal_to_noise: 1.0
+  audit_states_per_group: 5
+  audit_trajectories_per_state: 10
+  audit_state_cv_folds: 5
+  loss_collapse_patience: 3
+  loss_collapse_tolerance: 0.001
+  require_complete_archive: true
+  expected_samples: 2500
+  expected_structural_states: 25
+  seed: 20261015
+  split_seed: 20261015
+
+train:
+  device: auto
+  seed: 20261015
+  deterministic: true
+  batch_size: 32
+  epochs: 20
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: plateau
+  lr_factor: 0.5
+  lr_patience: 3
+  min_learning_rate: 0.00001
+  early_stopping_patience: 0
+  num_workers: 0
+  pin_memory: false
+  output_root: E:/working/DL_fusion/KW51_training/runs/kw51_adgroup_region_formal_v3
+
+model:
+  name: lstm
+  kwargs:
+    input_dim: 6
+    input_mode: region
+    region_pooling: flatten
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    bidirectional: false

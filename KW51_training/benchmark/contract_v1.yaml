@@ -1,0 +1,119 @@
+schema_version: kw51_public_benchmark_v1
+claim_scope:
+  track_s: Synthetic FEM source-domain comparison of regional response prediction and candidate FEM compatibility.
+  track_r: Unlabeled EGMS consistency and candidate-score stability analysis only.
+  qianhai_relation: Share only the L1 regional response definition, observation contract, and consistency metrics.
+  excluded_claims:
+    - real_insar_state_accuracy
+    - field_stiffness_inversion
+    - component_damage_classification
+    - bridge_health_diagnosis
+    - retrofit_phase_as_state_truth
+tracks:
+  S:
+    labels_available: true
+    split_unit: structural_state_id
+    tasks:
+      L1: Area-weighted LOS regional response mean and predictive scale over time.
+      L2: Query-candidate compatibility scores for the declared synthetic FEM candidate gallery.
+    uncertainty_unit: structural_state_id
+  R:
+    labels_available: false
+    state_accuracy: false
+    tasks:
+      L1: Trend, direction, time-correlation, or rank consistency only.
+      L2: Candidate score/order changes and stability across descriptive phase windows.
+    blocked_policy: Return BLOCKED or INSUFFICIENT_DENSITY when any readiness gate fails.
+input_contract:
+  allowed_fields:
+    - observed_values
+    - point_coordinates
+    - region_identity
+    - time_features
+    - valid_mask
+    - quality
+    - los_vector
+    - track_identity
+    - mapping_quality
+    - candidate_observation
+  forbidden_fields:
+    - structural_state_id
+    - Id_rel
+    - Ad_rel
+    - complete_node_field
+    - oracle_derived_labels
+    - retrofit_phase_label
+    - candidate_parameter_values
+  candidate_ids_are_metadata: true
+  dense_targets_are_loss_and_metric_only: true
+split:
+  schema_version: kw51_state_cv5_v1
+  fold_count: 5
+  split_unit: structural_state_id
+  stratification_field: candidate_family_id
+  per_fold_state_counts:
+    train: 15
+    validation: 5
+    test: 5
+  repeated_trajectories_stay_with_state: true
+normalization:
+  fit_scope: train_states_per_fold
+  record_fitted_state_ids: true
+dense_target:
+  shape: [region, time]
+  source_field: displacement_xyz
+  projection: dot_with_track_los_vector
+  units: mm
+  reference: per_acquisition_unweighted_valid_deck_node_mean
+  spatial_weight: shell_surface_area_tributary_weight
+  surface_sections: [7, 8]
+  unsupported_mesh_policy: fail_closed
+metrics:
+  L1:
+    - MAE
+    - RMSE
+    - CRPS
+    - coverage_50
+    - coverage_90
+  L2:
+    - Top1
+    - MRR
+    - NLL
+    - ECE
+  aggregation_levels:
+    - overall
+    - per_state
+    - per_region
+    - per_density
+  confidence_interval_unit: structural_state_id
+density:
+  point_budgets: [40, 80, 160, 640]
+  L1_gate: requires_dense_target_quality_audit
+  L2_gate:
+    required_snr: 1.0
+    run_formal_network_only_after_pass: true
+    fail_status: not_run_identifiability_fail
+    evidence: KW51_training/runs/kw51_fuzzy_region_budget_audit
+real_readiness:
+  transform_status: BLOCKED
+  required_checks:
+    - surveyed_control_points
+    - verified_native_units
+    - verified_track_reference_metadata
+    - audited_time_aggregation
+    - sufficient_per_track_region_density
+  phase_windows_are_weak_descriptive_evidence_only: true
+models:
+  core_baselines:
+    - global_mean
+    - region_mean_mlp
+    - point_lstm
+    - region_lstm
+    - region_summary_mean
+    - region_summary_plane
+    - region_summary_quadratic
+  adapter_review_only:
+    - transformer
+    - gnn
+ablations:
+  enabled: false

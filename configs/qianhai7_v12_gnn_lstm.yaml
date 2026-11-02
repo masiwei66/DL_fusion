@@ -1,3 +1,4 @@
+input_mode: node  # node | region; the same setting drives adapter and backbone.
 data:
   data_root: E:/working/DL_data/qianhai7_yearly_temperature_dataset_v3_final
   window_length: 6
@@ -34,7 +35,6 @@ train:
 model:
   name: gnn_lstm
   params:
-    # 共享节点契约的通道数（位移、观测掩码、x、y、温度、Δt）。
     node_input_dim: 6
     graph_hidden_dim: 64
     lstm_hidden_size: 128

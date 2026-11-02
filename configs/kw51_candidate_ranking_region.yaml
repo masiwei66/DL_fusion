@@ -1,0 +1,68 @@
+task: kw51_candidate_ranking
+input_mode: region  # node | region; the same setting drives adapter and backbone.
+
+data:
+  data_root: E:/working/KW51_data/outputs/fem_archive_v2_merged
+  dataset_kind: kw51
+  window_length: 8
+  stride: 4
+  eval_stride: 4
+  region_grid_size_m: 10.0
+  sparse_point_count: 80
+  min_points_per_region: 1
+  los_vector: [-0.534, -0.105, 0.839]
+  reference_mode: region_mean
+  unit_scale: 1000.0
+  noise_std_mm: 1.5
+  point_bias_std_mm: 0.5
+  missing_probability: 0.03
+  block_dropout_probability: 0.10
+  block_dropout_fraction: 0.15
+  min_quality: 0.05
+  pair_realizations: 2
+  # Use the complete 18-state training gallery (17 negatives) so the
+  # training listwise objective matches its state-level split instead of
+  # optimizing a 7-way subproblem and evaluating a 25-way gallery.
+  negative_candidates_per_window: 17
+  candidate_pool_scope: all_states
+  ranking_target: exact_state
+  split_mode: random
+  split_seed: 20261015
+  seed: 20261031
+  normalization_scope: global
+  normalization_max_records: 512
+  time_feature_mode: raw
+  require_complete_archive: true
+  expected_samples: 2500
+  expected_structural_states: 25
+  # Exact-state ranking is kept as a diagnostic baseline. The audit must run
+  # before interpreting any model metric under the current sparse/noisy view.
+  learnability_audit: true
+  audit_abort_on_fail: true
+  loss_collapse_patience: 3
+
+train:
+  device: auto
+  seed: 20261031
+  deterministic: true
+  batch_size: 32
+  epochs: 40
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: plateau
+  lr_factor: 0.5
+  lr_patience: 3
+  min_learning_rate: 0.00001
+  early_stopping_patience: 0
+  num_workers: 0
+  pin_memory: false
+  output_root: E:/working/DL_fusion/KW51_training/runs/kw51_candidate_ranking_region_v1
+
+model:
+  name: lstm
+  kwargs:
+    input_dim: 6
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    bidirectional: false

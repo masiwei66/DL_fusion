@@ -1,3 +1,5 @@
+task: qianhai_four_task
+input_mode: node  # node | region; the same setting drives adapter and backbone.
 data:
   data_root: E:/working/DL_data/test
   window_length: 6
@@ -7,6 +9,11 @@ data:
   virtual_point_count_max: 100
   noise_std_mm: 0.2
   missing_probability: 0.05
+  # Shared sparse-point -> fixed square-grid observation adapter.
+  region_grid_size_m: 10.0
+  min_points_per_region: 1
+  # HDF5 mesh coordinates are stored in millimeters; the observation grid is metric.
+  coordinate_scale_to_m: 0.001
   # Virtual-observation variants mixed within each training epoch. 1 = off.
   observation_realizations: 4
   realization_sampling: balanced_random
@@ -18,6 +25,9 @@ data:
   missing_scan_probability: [0.0, 0.05, 0.1, 0.2]
   split_seed: 20260924
 train:
+  device: auto
+  seed: 20261031
+  deterministic: true
   batch_size: 32
   epochs: 2
   learning_rate: 0.001
@@ -36,22 +46,13 @@ train:
 
 
 model:
-  # 默认使用共享节点级输入 [B, W, P, 6]；input_mode: regional 可用于消融。
   name: lstm
-  params:
-    # node(逐点) 编码器输入 6 通道；切 pooled/regional 消融时改为 9。
+  kwargs:
     input_dim: 6
-    input_mode: node
     hidden_size: 128
     num_layers: 2
     dropout: 0.1
     bidirectional: false
-# model:
-#   name: lstm
-#   params:
-#     hidden_size: 128
-#     num_layers: 2
-#     dropout: 0.1
 regional_targets:
   target_schema: regional_anomaly_v1
   target_version: v1

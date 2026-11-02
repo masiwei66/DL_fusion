@@ -1,3 +1,4 @@
+input_mode: node  # node | region; the same setting drives adapter and backbone.
 data:
   data_root: E:/working/DL_data/qianhai7_yearly_temperature_dataset_v3_final
   window_length: 6
@@ -35,9 +36,7 @@ model:
   # 与 LSTM/ResNet 使用相同节点级输入、标签和四个输出头。
   name: gru
   params:
-    # node(逐点) 编码器输入 6 通道；切 pooled/regional 消融时改为 9。
     input_dim: 6
-    input_mode: node
     hidden_size: 128
     num_layers: 2
     dropout: 0.1

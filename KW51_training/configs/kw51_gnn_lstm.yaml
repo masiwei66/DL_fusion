@@ -1,0 +1,48 @@
+task: kw51_candidate_ranking
+data:
+  data_root: E:/working/KW51_data/outputs/fem_archive_v2_merged
+  dataset_kind: kw51
+  window_length: 8
+  stride: 4
+  eval_stride: 4
+  pair_realizations: 2
+  negative_candidates_per_window: 6
+  candidate_pool_scope: all_states
+  region_count: 8
+  los_vector: [-0.534, -0.105, 0.839]
+  footprint_sigma_m: 8.0
+  reference_mode: region_mean
+  unit_scale: 1000.0
+  noise_std_mm: 1.5
+  missing_probability: 0.03
+  normalization_max_records: 512
+  require_complete_archive: true
+  expected_samples: 2500
+  expected_structural_states: 25
+  seed: 20261015
+  split_seed: 20261015
+train:
+  batch_size: 16
+  epochs: 20
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: plateau
+  lr_factor: 0.5
+  lr_patience: 3
+  min_learning_rate: 0.00001
+  early_stopping_patience: 6
+  num_workers: 0
+  pin_memory: false
+  output_root: E:/working/DL_fusion/KW51_training/runs/kw51_gnn_lstm
+model:
+  name: gnn_lstm
+  params:
+    node_input_dim: 6
+    graph_hidden_dim: 64
+    lstm_hidden_size: 128
+    graph_layers: 2
+    lstm_layers: 2
+    knn_k: 4
+    dropout: 0.1
+    bidirectional: false
+

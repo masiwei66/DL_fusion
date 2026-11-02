@@ -1,3 +1,4 @@
+input_mode: node  # node | region; the same setting drives adapter and backbone.
 data:
   data_root: E:/working/DL_data/qianhai7_yearly_temperature_dataset_v3_final
   window_length: 6
@@ -35,9 +36,7 @@ model:
   # ResNet 与其它神经基线使用相同节点级输入、输出和数据划分。
   name: resnet50_1d
   params:
-    # node(逐点) 编码器输入 6 通道；切 pooled/regional 消融时改为 9。
     input_dim: 6
-    input_mode: node
     base_width: 32
     layers: [3, 4, 6, 3]
     # Keep all temporal resolutions for the six-step window.

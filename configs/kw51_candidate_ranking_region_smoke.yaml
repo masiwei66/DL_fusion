@@ -1,0 +1,66 @@
+task: kw51_candidate_ranking
+input_mode: region
+
+data:
+  data_root: E:/working/KW51_data/outputs/fem_archive_v2_merged
+  dataset_kind: kw51
+  window_length: 8
+  stride: 4
+  eval_stride: 8
+  region_grid_size_m: 10.0
+  sparse_point_count: 80
+  min_points_per_region: 1
+  los_vector: [-0.534, -0.105, 0.839]
+  reference_mode: region_mean
+  unit_scale: 1000.0
+  noise_std_mm: 1.5
+  point_bias_std_mm: 0.5
+  missing_probability: 0.03
+  block_dropout_probability: 0.10
+  block_dropout_fraction: 0.15
+  min_quality: 0.05
+  pair_realizations: 1
+  negative_candidates_per_window: 1
+  candidate_pool_scope: all_states
+  ranking_target: exact_state
+  split_mode: random
+  split_seed: 20261015
+  seed: 20261031
+  normalization_scope: global
+  normalization_max_records: 16
+  time_feature_mode: raw
+  require_complete_archive: true
+  expected_samples: 2500
+  expected_structural_states: 25
+
+train:
+  device: cpu
+  seed: 20261031
+  deterministic: true
+  cpu_threads: 2
+  batch_size: 4
+  epochs: 1
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: none
+  early_stopping_patience: 0
+  num_workers: 0
+  pin_memory: false
+  progress: log
+  log_every_batches: 1
+  output_root: E:/working/DL_fusion/KW51_training/runs/local_candidate_ranking_region_smoke
+
+model:
+  name: lstm
+  kwargs:
+    input_dim: 6
+    hidden_size: 16
+    num_layers: 1
+    dropout: 0.0
+    bidirectional: false
+
+smoke:
+  enabled: true
+  states_per_split: 2
+  records_per_state: 2
+  windows_per_state: 2

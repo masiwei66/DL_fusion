@@ -1,0 +1,43 @@
+{
+  "schema_version": "kw51_state_manifest_v1",
+  "source_archive_schema": "kw51_fem_archive_v2",
+  "archive_audit_status": "PASS_FEM_ARCHIVE",
+  "archive_sample_count": 2500,
+  "state_count": 25,
+  "trajectory_count": 2500,
+  "trajectory_count_per_state": 100,
+  "candidate_families": [
+    {"family_id": "ad_00", "Ad_rel": 0.78, "state_ids": ["1", "6", "11", "16", "21"]},
+    {"family_id": "ad_01", "Ad_rel": 0.805, "state_ids": ["2", "7", "12", "17", "22"]},
+    {"family_id": "ad_02", "Ad_rel": 0.83, "state_ids": ["3", "8", "13", "18", "23"]},
+    {"family_id": "ad_03", "Ad_rel": 0.855, "state_ids": ["4", "9", "14", "19", "24"]},
+    {"family_id": "ad_04", "Ad_rel": 0.88, "state_ids": ["5", "10", "15", "20", "25"]}
+  ],
+  "states": [
+    {"structural_state_id": "1", "state_split_group": "state_0001", "candidate_family_id": "ad_00", "trajectory_count": 100},
+    {"structural_state_id": "2", "state_split_group": "state_0002", "candidate_family_id": "ad_01", "trajectory_count": 100},
+    {"structural_state_id": "3", "state_split_group": "state_0003", "candidate_family_id": "ad_02", "trajectory_count": 100},
+    {"structural_state_id": "4", "state_split_group": "state_0004", "candidate_family_id": "ad_03", "trajectory_count": 100},
+    {"structural_state_id": "5", "state_split_group": "state_0005", "candidate_family_id": "ad_04", "trajectory_count": 100},
+    {"structural_state_id": "6", "state_split_group": "state_0006", "candidate_family_id": "ad_00", "trajectory_count": 100},
+    {"structural_state_id": "7", "state_split_group": "state_0007", "candidate_family_id": "ad_01", "trajectory_count": 100},
+    {"structural_state_id": "8", "state_split_group": "state_0008", "candidate_family_id": "ad_02", "trajectory_count": 100},
+    {"structural_state_id": "9", "state_split_group": "state_0009", "candidate_family_id": "ad_03", "trajectory_count": 100},
+    {"structural_state_id": "10", "state_split_group": "state_0010", "candidate_family_id": "ad_04", "trajectory_count": 100},
+    {"structural_state_id": "11", "state_split_group": "state_0011", "candidate_family_id": "ad_00", "trajectory_count": 100},
+    {"structural_state_id": "12", "state_split_group": "state_0012", "candidate_family_id": "ad_01", "trajectory_count": 100},
+    {"structural_state_id": "13", "state_split_group": "state_0013", "candidate_family_id": "ad_02", "trajectory_count": 100},
+    {"structural_state_id": "14", "state_split_group": "state_0014", "candidate_family_id": "ad_03", "trajectory_count": 100},
+    {"structural_state_id": "15", "state_split_group": "state_0015", "candidate_family_id": "ad_04", "trajectory_count": 100},
+    {"structural_state_id": "16", "state_split_group": "state_0016", "candidate_family_id": "ad_00", "trajectory_count": 100},
+    {"structural_state_id": "17", "state_split_group": "state_0017", "candidate_family_id": "ad_01", "trajectory_count": 100},
+    {"structural_state_id": "18", "state_split_group": "state_0018", "candidate_family_id": "ad_02", "trajectory_count": 100},
+    {"structural_state_id": "19", "state_split_group": "state_0019", "candidate_family_id": "ad_03", "trajectory_count": 100},
+    {"structural_state_id": "20", "state_split_group": "state_0020", "candidate_family_id": "ad_04", "trajectory_count": 100},
+    {"structural_state_id": "21", "state_split_group": "state_0021", "candidate_family_id": "ad_00", "trajectory_count": 100},
+    {"structural_state_id": "22", "state_split_group": "state_0022", "candidate_family_id": "ad_01", "trajectory_count": 100},
+    {"structural_state_id": "23", "state_split_group": "state_0023", "candidate_family_id": "ad_02", "trajectory_count": 100},
+    {"structural_state_id": "24", "state_split_group": "state_0024", "candidate_family_id": "ad_03", "trajectory_count": 100},
+    {"structural_state_id": "25", "state_split_group": "state_0025", "candidate_family_id": "ad_04", "trajectory_count": 100}
+  ]
+}

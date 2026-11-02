@@ -1,0 +1,49 @@
+task: qianhai_four_task
+input_mode: node
+
+data:
+  data_root: E:/working/DL_data/test
+  window_length: 6
+  stride: 6
+  eval_stride: 6
+  virtual_point_count_min: 50
+  virtual_point_count_max: 100
+  noise_std_mm: 0.2
+  missing_probability: 0.05
+  region_grid_size_m: 10.0
+  min_points_per_region: 1
+  coordinate_scale_to_m: 0.001
+  observation_realizations: 2
+  realization_sampling: balanced_random
+  validation_realizations: 2
+  split_seed: 20260924
+  seed: 20261031
+
+train:
+  device: cpu
+  seed: 20261031
+  deterministic: true
+  cpu_threads: 2
+  batch_size: 4
+  epochs: 1
+  learning_rate: 0.001
+  lr_scheduler: none
+  early_stopping_patience: 0
+  num_workers: 0
+  progress: log
+  log_every_batches: 1
+  output_root: E:/working/DL_fusion/qianhai7_training_v2/runs/local_node_smoke
+
+model:
+  name: lstm
+  kwargs:
+    hidden_size: 16
+    num_layers: 1
+    dropout: 0.0
+    bidirectional: false
+
+smoke:
+  enabled: true
+  states_per_split: 2
+  records_per_state: 2
+  windows_per_state: 2
