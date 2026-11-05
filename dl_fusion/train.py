@@ -16,7 +16,12 @@ def _read_task(config_path: Path) -> str:
         raise RuntimeError("Loading YAML config requires PyYAML") from exc
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     task = str(payload.get("task", "qianhai_four_task"))
-    if task not in ("qianhai_four_task", "kw51_candidate_ranking", "kw51_fuzzy_response"):
+    if task not in (
+        "qianhai_four_task",
+        "kw51_candidate_ranking",
+        "kw51_fuzzy_response",
+        "kw51_ad_rel_classification",
+    ):
         raise ValueError(f"Unsupported task: {task!r}")
     return task
 
@@ -88,7 +93,19 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     fuzzy = config.fuzzy
     if fuzzy is None:
-        raise ValueError("kw51_fuzzy_response requires a fuzzy config section")
+        raise ValueError(f"{task} requires a fuzzy config section")
+    if task == "kw51_ad_rel_classification":
+        if config.tasks is None or config.tasks.selected_task != "ad_rel_classification":
+            raise ValueError("kw51_ad_rel_classification requires its task head to be enabled")
+        if config.inference is None or config.inference.outputs != ("ad_rel_classification",):
+            raise ValueError("classification config must select ad_rel_classification output")
+        if config.checkpoint_selection is None or config.checkpoint_selection.metric not in (
+            "f1_macro",
+            "nll",
+        ):
+            raise ValueError(
+                "classification checkpoint selection must use f1_macro or nll"
+            )
     if fuzzy.observation_mode == "region_bag":
         if fuzzy.primary_target not in ("state", "ad_group"):
             raise ValueError("region_bag requires primary_target state or ad_group")

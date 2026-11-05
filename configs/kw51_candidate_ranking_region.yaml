@@ -1,6 +1,26 @@
 task: kw51_candidate_ranking
 input_mode: region  # node | region; the same setting drives adapter and backbone.
 
+tasks:
+  candidate_compatibility:
+    enabled: true
+    loss: listwise
+    loss_weight: 1.0
+  ad_rel_classification:
+    enabled: false
+    target: Ad_rel
+    class_values: [0.780, 0.805, 0.830, 0.855, 0.880]
+    loss: cross_entropy
+    loss_weight: 0.2
+
+inference:
+  outputs: [candidate_compatibility]
+
+training:
+  checkpoint_selection:
+    task: candidate_compatibility
+    metric: mrr
+
 data:
   data_root: E:/working/KW51_data/outputs/fem_archive_v2_merged
   dataset_kind: kw51

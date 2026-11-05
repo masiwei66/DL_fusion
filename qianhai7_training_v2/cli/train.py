@@ -35,7 +35,13 @@ from ..training.engine import train_one_epoch
 from ..training.losses import supervised_loss
 from ..training.plots import plot_final_evaluation, plot_training_history, write_history
 from ..training.progress import make_progress
-from ..training.report import Stopwatch, classification_metrics, count_parameters, write_report
+from ..training.report import (
+    Stopwatch,
+    classification_metric_metadata,
+    classification_metrics,
+    count_parameters,
+    write_report,
+)
 from dl_fusion.training.lifecycle import (
     BestMetricTracker,
     build_adamw,
@@ -170,7 +176,6 @@ def evaluate_torch(model, loader, device, *, desc=None, progress=None, task_weig
 
 def pack_metrics(predictions, losses=None):
     results = {}
-    from sklearn.metrics import f1_score
 
     for key, values in predictions.items():
         metric = classification_metrics(
@@ -181,17 +186,20 @@ def pack_metrics(predictions, losses=None):
         )
         metric["macro_f1"] = metric["f1_macro"]
         metric["class_names"] = list(TASK_LABEL_LEVEL_NAMES)
-        metric["f1_per_class"] = f1_score(
-            values["y_true"],
-            values["y_pred"],
-            labels=np.arange(len(TASK_LABEL_LEVEL_NAMES)),
-            average=None,
-            zero_division=0,
-        ).tolist()
         results[key] = metric
     if losses is not None:
         results["combined_loss"] = float(losses)
     return results
+
+
+def _classification_report_metadata() -> dict[str, object]:
+    metadata = classification_metric_metadata(
+        evaluation_unit="window_x_realization",
+        num_classes=len(TASK_LABEL_LEVEL_NAMES),
+        aggregation="macro_over_all_window_x_realization_predictions",
+    )
+    metadata["classification_metric_protocol"] = metadata["metric_protocol"]
+    return metadata
 
 
 def save_torch_checkpoint(path, model, optimizer, config, normalization, epoch):
@@ -331,6 +339,7 @@ def train_xgboost(config, train_loader, validation_loader, test_loader, normaliz
         "target_schema": TASK_LABEL_SCHEMA,
         "task_names": list(TASK_LABEL_NAMES),
         "class_names": list(TASK_LABEL_LEVEL_NAMES),
+        **_classification_report_metadata(),
         "data_root": str(config.data.data_root),
         "window_length": config.data.window_length,
         "batch_size": config.train.batch_size,
@@ -659,6 +668,7 @@ def main(argv: list[str] | None = None) -> None:
         "target_schema": TASK_LABEL_SCHEMA,
         "task_names": list(TASK_LABEL_NAMES),
         "class_names": list(TASK_LABEL_LEVEL_NAMES),
+        **_classification_report_metadata(),
         "data_root": str(data.data_root),
         "window_length": data.window_length,
         "batch_size": train.batch_size,

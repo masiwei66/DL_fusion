@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from dl_fusion.metrics import classification_metrics
+
 from .fuzzy_losses import gaussian_crps, gaussian_nll
 
 _COVERAGE_Z = {"50": 0.67448975, "80": 1.28155157, "95": 1.95996398}
@@ -128,7 +130,14 @@ def group_metrics(
         group_ids.numpy() * probabilities.shape[1] + predictions.numpy(),
         minlength=probabilities.shape[1] ** 2,
     ).reshape(probabilities.shape[1], probabilities.shape[1])
+    y_true = group_ids.numpy().reshape(-1)
+    y_pred = predictions.numpy().reshape(-1)
+    y_prob = probabilities.numpy()
+    labels = np.arange(probabilities.shape[1], dtype=np.int64)
+    shared = classification_metrics(y_true, y_pred, y_prob, class_values=labels)
     result: dict[str, Any] = {
+        **shared,
+        "class_names": [f"Ad_rel={float(value):g}" for value in group_values],
         "top1_accuracy": accuracy,
         "top3_accuracy": top3,
         "mrr": mrr,
@@ -138,6 +147,7 @@ def group_metrics(
         "confusion_matrix": confusion.tolist(),
         "num_samples": int(group_ids.shape[0]),
     }
+    result["macro_f1"] = result["f1_macro"]
     values = np.asarray(group_values, dtype=np.float64)
     if values.size == probabilities.shape[1]:
         probabilities_np = probabilities.numpy()

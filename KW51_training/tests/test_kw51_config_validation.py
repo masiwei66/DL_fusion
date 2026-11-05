@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from KW51_training.config import DataConfig, load_experiment_config
+from KW51_training.config import DataConfig, TasksConfig, TaskHeadConfig, load_experiment_config
 
 
 CONFIG_ROOT = Path(__file__).resolve().parents[1] / "configs"
@@ -42,6 +42,38 @@ def test_old_config_keeps_legacy_defaults() -> None:
     assert config.data.time_feature_mode == "raw"
     assert config.data.learnability_audit is False
     assert config.data.loss_collapse_patience == 0
+
+
+def test_ad_rel_classification_config_selects_classification_output() -> None:
+    config = load_experiment_config(
+        Path(__file__).resolve().parents[2] / "configs" / "kw51_ad_rel_classification.yaml"
+    )
+    assert config.task == "kw51_ad_rel_classification"
+    assert config.tasks is not None
+    assert config.tasks.selected_task == "ad_rel_classification"
+    assert config.inference is not None
+    assert config.inference.outputs == ("ad_rel_classification",)
+    assert config.checkpoint_selection is not None
+    assert config.checkpoint_selection.metric == "nll"
+    assert config.fuzzy is not None and config.fuzzy.primary_target == "ad_group"
+    assert config.fuzzy.train_trajectories_per_state == 20
+    assert config.fuzzy.eval_trajectories_per_state == 10
+    assert config.fuzzy.region_model == "region_summary"
+    assert config.train.epochs > 0
+    assert config.train.early_stopping_patience >= 0
+
+
+def test_task_interface_rejects_multiple_enabled_tasks() -> None:
+    with pytest.raises(ValueError, match="exactly one KW51 task"):
+        TasksConfig(
+            candidate_compatibility=TaskHeadConfig(enabled=True),
+            ad_rel_classification=TaskHeadConfig(
+                enabled=True,
+                loss="cross_entropy",
+                target="Ad_rel",
+                class_values=(0.780, 0.805, 0.830, 0.855, 0.880),
+            ),
+        )
 
 
 def test_invalid_ranking_target_is_rejected() -> None:

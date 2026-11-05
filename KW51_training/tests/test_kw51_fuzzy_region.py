@@ -270,11 +270,13 @@ def test_region_config_validation() -> None:
 
 def test_cap_records_per_state() -> None:
     records = [
-        SimpleNamespace(structural_state_id=str(state))
-        for state in (1, 1, 1, 2, 2, 3)
+        SimpleNamespace(structural_state_id=str(state), sample=index)
+        for index, state in enumerate((1, 1, 1, 1, 2, 2, 2, 3))
     ]
-    capped = _cap_records_per_state(records, 1)
-    assert [record.structural_state_id for record in capped] == ["1", "2", "3"]
+    capped = _cap_records_per_state(records, 2, seed=27)
+    repeated = _cap_records_per_state(records, 2, seed=27)
+    assert [record.structural_state_id for record in capped] == ["1", "1", "2", "2", "3"]
+    assert [record.sample for record in capped] == [record.sample for record in repeated]
     assert len(_cap_records_per_state(records, 0)) == len(records)
 
 

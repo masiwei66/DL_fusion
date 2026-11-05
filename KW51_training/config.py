@@ -15,6 +15,8 @@ SUPPORTED_MODEL_NAMES = (
     "gnn_lstm",
 )
 
+KW51_TASK_NAMES = ("candidate_compatibility", "ad_rel_classification")
+
 
 @dataclass(frozen=True)
 class DataConfig:
@@ -352,6 +354,85 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class TaskHeadConfig:
+    enabled: bool = False
+    loss: str = "listwise"
+    loss_weight: float = 1.0
+    target: str | None = None
+    class_values: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.loss_weight <= 0.0:
+            raise ValueError("task loss_weight must be > 0")
+        if self.class_values and any(
+            right <= left for left, right in zip(self.class_values, self.class_values[1:])
+        ):
+            raise ValueError("task class_values must be strictly increasing")
+
+
+@dataclass(frozen=True)
+class TasksConfig:
+    candidate_compatibility: TaskHeadConfig = TaskHeadConfig(
+        enabled=True, loss="listwise"
+    )
+    ad_rel_classification: TaskHeadConfig = TaskHeadConfig(
+        enabled=False,
+        loss="cross_entropy",
+        target="Ad_rel",
+        class_values=(0.780, 0.805, 0.830, 0.855, 0.880),
+    )
+
+    def __post_init__(self) -> None:
+        enabled = [
+            name
+            for name in KW51_TASK_NAMES
+            if getattr(self, name).enabled
+        ]
+        if len(enabled) != 1:
+            raise ValueError("exactly one KW51 task must be enabled per run")
+        if self.candidate_compatibility.enabled and self.candidate_compatibility.loss != "listwise":
+            raise ValueError("candidate_compatibility.loss must be listwise")
+        if self.ad_rel_classification.enabled:
+            classifier = self.ad_rel_classification
+            if classifier.loss != "cross_entropy":
+                raise ValueError("ad_rel_classification.loss must be cross_entropy")
+            if classifier.target != "Ad_rel":
+                raise ValueError("ad_rel_classification.target must be Ad_rel")
+            if len(classifier.class_values) != 5:
+                raise ValueError("ad_rel_classification.class_values must define five classes")
+
+    @property
+    def selected_task(self) -> str:
+        return next(name for name in KW51_TASK_NAMES if getattr(self, name).enabled)
+
+
+@dataclass(frozen=True)
+class InferenceConfig:
+    outputs: tuple[str, ...] = ("candidate_compatibility",)
+
+    def __post_init__(self) -> None:
+        if not self.outputs or any(value not in KW51_TASK_NAMES for value in self.outputs):
+            raise ValueError(f"inference.outputs must contain values from {KW51_TASK_NAMES}")
+
+
+@dataclass(frozen=True)
+class CheckpointSelectionConfig:
+    task: str = "candidate_compatibility"
+    metric: str = "mrr"
+
+    def __post_init__(self) -> None:
+        allowed = {
+            "candidate_compatibility": {"mrr"},
+            "ad_rel_classification": {"f1_macro", "nll"},
+        }
+        if self.task not in allowed or self.metric not in allowed[self.task]:
+            raise ValueError(
+                "checkpoint_selection must use candidate_compatibility/mrr or "
+                "ad_rel_classification/f1_macro or ad_rel_classification/nll"
+            )
+
+
+@dataclass(frozen=True)
 class FuzzyConfig:
     """Fuzzy-range multi-instance response-distribution experiment settings."""
 
@@ -573,6 +654,9 @@ class ExperimentConfig:
     input_mode: str = "node"
     fuzzy: FuzzyConfig | None = None
     smoke: SmokeConfig = SmokeConfig()
+    tasks: TasksConfig | None = None
+    inference: InferenceConfig | None = None
+    checkpoint_selection: CheckpointSelectionConfig | None = None
 
 
 def load_experiment_config(
@@ -601,12 +685,18 @@ def load_experiment_config(
     raw_data.pop("region_count", None)
     raw_data.pop("footprint_sigma_m", None)
     task = str(payload.get("task", "qianhai_four_task"))
-    if task not in ("qianhai_four_task", "kw51_candidate_ranking", "kw51_fuzzy_response"):
+    if task not in (
+        "qianhai_four_task",
+        "kw51_candidate_ranking",
+        "kw51_fuzzy_response",
+        "kw51_ad_rel_classification",
+    ):
         raise ValueError(
-            "task must be qianhai_four_task, kw51_candidate_ranking or kw51_fuzzy_response"
+            "task must be qianhai_four_task, kw51_candidate_ranking, "
+            "kw51_fuzzy_response or kw51_ad_rel_classification"
         )
-    if task == "kw51_fuzzy_response" and not payload.get("fuzzy"):
-        raise ValueError("task kw51_fuzzy_response requires a fuzzy: config section")
+    if task in ("kw51_fuzzy_response", "kw51_ad_rel_classification") and not payload.get("fuzzy"):
+        raise ValueError(f"task {task} requires a fuzzy: config section")
 
     # Keep the existing train.model_name format valid while allowing the clearer
     # model.name/model.params format for new experiments.
@@ -660,6 +750,73 @@ def load_experiment_config(
     model = ModelConfig(name=model_name, params=model_params)
     regional_targets = RegionalTargetConfig(**raw_targets)
     fuzzy = FuzzyConfig(**raw_fuzzy) if raw_fuzzy else None
+    raw_tasks = payload.get("tasks")
+    tasks = None
+    inference = None
+    checkpoint_selection = None
+    if raw_tasks is not None:
+        task_payload = dict(raw_tasks)
+        default_candidate_enabled = task == "kw51_candidate_ranking"
+        default_classifier_enabled = task == "kw51_ad_rel_classification"
+        candidate_payload = dict(task_payload.get("candidate_compatibility") or {})
+        classifier_payload = dict(task_payload.get("ad_rel_classification") or {})
+        candidate_payload.setdefault("enabled", default_candidate_enabled)
+        candidate_payload.setdefault("loss", "listwise")
+        candidate_payload.setdefault("loss_weight", 1.0)
+        classifier_payload.setdefault("enabled", default_classifier_enabled)
+        classifier_payload.setdefault("loss", "cross_entropy")
+        classifier_payload.setdefault("loss_weight", 0.2)
+        classifier_payload.setdefault("target", "Ad_rel")
+        classifier_payload["class_values"] = tuple(
+            float(value)
+            for value in classifier_payload.get(
+                "class_values", (0.780, 0.805, 0.830, 0.855, 0.880)
+            )
+        )
+        tasks = TasksConfig(
+            candidate_compatibility=TaskHeadConfig(**candidate_payload),
+            ad_rel_classification=TaskHeadConfig(**classifier_payload),
+        )
+        selected_task = tasks.selected_task
+        expected_task = {
+            "kw51_candidate_ranking": "candidate_compatibility",
+            "kw51_ad_rel_classification": "ad_rel_classification",
+        }.get(task)
+        if expected_task is not None and selected_task != expected_task:
+            raise ValueError(f"task={task} conflicts with tasks.{selected_task}.enabled")
+        raw_inference = dict(payload.get("inference") or {})
+        default_output = "ad_rel_classification" if selected_task == "ad_rel_classification" else "candidate_compatibility"
+        inference = InferenceConfig(
+            outputs=tuple(raw_inference.get("outputs", (default_output,)))
+        )
+        if inference.outputs != (selected_task,):
+            raise ValueError("inference.outputs must select the single enabled task")
+        raw_selection = dict((payload.get("training") or {}).get("checkpoint_selection") or {})
+        default_metric = "f1_macro" if selected_task == "ad_rel_classification" else "mrr"
+        checkpoint_selection = CheckpointSelectionConfig(
+            task=str(raw_selection.get("task", selected_task)),
+            metric=str(raw_selection.get("metric", default_metric)),
+        )
+        if checkpoint_selection.task != selected_task:
+            raise ValueError("checkpoint_selection.task must match the enabled task")
+    elif task == "kw51_ad_rel_classification":
+        raise ValueError("kw51_ad_rel_classification requires a tasks: config section")
+    if task == "kw51_ad_rel_classification":
+        if data.dataset_kind != "kw51":
+            raise ValueError("kw51_ad_rel_classification requires data.dataset_kind=kw51")
+        if data.ranking_target != "ad_group" or data.ad_group_parameter != "Ad_rel":
+            raise ValueError(
+                "kw51_ad_rel_classification requires ranking_target=ad_group "
+                "and ad_group_parameter=Ad_rel"
+            )
+        if data.split_mode != "ad_group_stratified":
+            raise ValueError(
+                "kw51_ad_rel_classification requires split_mode=ad_group_stratified"
+            )
+        if fuzzy is None or fuzzy.primary_target != "ad_group":
+            raise ValueError(
+                "kw51_ad_rel_classification requires fuzzy.primary_target=ad_group"
+            )
     return ExperimentConfig(
         data=data,
         train=train,
@@ -669,4 +826,7 @@ def load_experiment_config(
         input_mode=input_mode,
         fuzzy=fuzzy,
         smoke=SmokeConfig(**(payload.get("smoke") or {})),
+        tasks=tasks,
+        inference=inference,
+        checkpoint_selection=checkpoint_selection,
     )

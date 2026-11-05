@@ -319,6 +319,7 @@ def _run_epoch(
     epoch: int | None = None,
     global_step_offset: int = 0,
     on_train_step: Callable[[dict[str, Any]], None] | None = None,
+    loss_weight: float = 1.0,
 ) -> tuple[float, dict[str, Any]]:
     model.train(train)
     total_loss = 0.0
@@ -332,6 +333,7 @@ def _run_epoch(
             with torch.set_grad_enabled(train):
                 logits = model.forward_pair(batch_device)
                 loss = _listwise_ranking_loss(logits, batch_device["label"], batch_device["metadata"])
+                loss = loss * float(loss_weight)
                 if train:
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
@@ -1216,7 +1218,14 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
 
     best_metric = BestMetricTracker()
     collapse_epochs = 0
-    log_num_candidates = math.log(max(int(num_candidates), 2))
+    ranking_loss_weight = (
+        config.tasks.candidate_compatibility.loss_weight
+        if getattr(config, "tasks", None) is not None
+        else 1.0
+    )
+    uniform_ranking_loss = ranking_loss_weight * math.log(
+        max(int(num_candidates), 2)
+    )
     for epoch in range(1, config.train.epochs + 1):
         train_batch_sampler.set_epoch(epoch - 1)
         train_loss, train_metrics = _run_epoch(
@@ -1230,6 +1239,7 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
             epoch=epoch,
             global_step_offset=global_step,
             on_train_step=record_train_step,
+            loss_weight=ranking_loss_weight,
         )
         epoch_step_start = global_step + 1
         global_step += len(train_loader)
@@ -1241,9 +1251,13 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
             train=False,
             progress=progress_options,
             desc=f"validation epoch={epoch}",
+            loss_weight=ranking_loss_weight,
         )
         if data.loss_collapse_patience > 0:
-            baseline_loss = abs(train_loss - log_num_candidates) <= data.loss_collapse_tolerance
+            baseline_loss = (
+                abs(train_loss - uniform_ranking_loss)
+                <= data.loss_collapse_tolerance
+            )
             score_collapse = (
                 abs(train_metrics.get("pairwise_accuracy", 0.5) - 0.5) <= 0.02
                 and train_metrics.get("mean_score_spread", float("inf")) <= 1.0e-4
@@ -1258,7 +1272,7 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
                     "reason": "loss_collapse",
                     "epoch": epoch,
                     "num_candidates": int(num_candidates),
-                    "target_loss": log_num_candidates,
+                    "target_loss": uniform_ranking_loss,
                     "train_loss": train_loss,
                     "tolerance": data.loss_collapse_tolerance,
                     "train_metrics": train_metrics,
@@ -1345,6 +1359,7 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
         train=False,
         progress=progress_options,
         desc="validation best-checkpoint",
+        loss_weight=ranking_loss_weight,
     )
     _, test_metrics = _run_epoch(
         model,
@@ -1354,6 +1369,7 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
         train=False,
         progress=progress_options,
         desc="test best-checkpoint",
+        loss_weight=ranking_loss_weight,
     )
     validation_predictions = _collect_ranking_predictions(model, validation_loader, device)
     test_predictions = _collect_ranking_predictions(model, test_loader, device)
@@ -1438,6 +1454,11 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
     report = {
         "task": "kw51_candidate_ranking",
         "primary_outputs": ["candidate_state_score", "candidate_state_rank", "top_k_candidates"],
+        "inference_outputs": (
+            list(config.inference.outputs)
+            if getattr(config, "inference", None) is not None
+            else ["candidate_compatibility"]
+        ),
         "model_name": config.model.name,
         "model_params": config.model.kwargs,
         "data_root": str(data.data_root),
@@ -1535,6 +1556,7 @@ def run_kw51_training(config, *, preflight_only: bool = False) -> dict[str, Any]
         "training_instances": len(train_dataset),
         "pair_realizations": data.pair_realizations,
         "ranking_loss": "listwise_softmax_over_query_candidate_group",
+        "ranking_loss_weight": float(ranking_loss_weight),
         "batching": "query_grouped_without_candidate_group_split",
         "query_encoding": "deduplicated_within_batch_by_query_metadata",
         "best_epoch": best_metric.best_epoch,

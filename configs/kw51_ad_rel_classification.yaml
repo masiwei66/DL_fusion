@@ -1,0 +1,87 @@
+task: kw51_ad_rel_classification
+input_mode: region
+
+tasks:
+  candidate_compatibility:
+    enabled: false
+    loss: listwise
+    loss_weight: 1.0
+  ad_rel_classification:
+    enabled: true
+    target: Ad_rel
+    class_values: [0.780, 0.805, 0.830, 0.855, 0.880]
+    loss: cross_entropy
+    loss_weight: 1.0
+
+inference:
+  outputs: [ad_rel_classification]
+
+training:
+  checkpoint_selection:
+    task: ad_rel_classification
+    metric: nll
+
+data:
+  data_root: E:/working/KW51_data/outputs/fem_archive_v2_merged
+  dataset_kind: kw51
+  ranking_target: ad_group
+  ad_group_parameter: Ad_rel
+  ad_group_count: 5
+  split_mode: ad_group_stratified
+  split_fold: 0
+  window_length: 26
+  stride: 1
+  train_fraction: 0.6
+  validation_fraction: 0.2
+  split_seed: 20261015
+  seed: 20261015
+  require_complete_archive: true
+  expected_samples: 2500
+  expected_structural_states: 25
+  diagnostic_only: false
+
+fuzzy:
+  primary_target: ad_group
+  observation_mode: region_bag
+  region_mode: longitudinal
+  region_rows: 8
+  region_cols: 1
+  region_point_budget: 160
+  region_model: region_summary
+  region_min_valid_points: 3
+  region_audit: true
+  region_audit_abort_on_fail: false
+  train_trajectories_per_state: 20
+  eval_trajectories_per_state: 10
+  query_realizations: 2
+  formal_run: true
+  region_pooling: flatten
+
+train:
+  device: auto
+  seed: 20261015
+  deterministic: true
+  batch_size: 16
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  lr_scheduler: plateau
+  lr_factor: 0.5
+  lr_patience: 3
+  min_learning_rate: 0.00001
+  early_stopping_patience: 0
+  num_workers: 0
+  pin_memory: false
+  output_root: E:/working/DL_fusion/KW51_training/runs/kw51_ad_rel_classification_gru_20261104
+
+model:
+  name: gru
+  params:
+    input_dim: 6
+    input_mode: region
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.1
+    bidirectional: false
+    head_hidden: 128
+    head_dropout: 0.1

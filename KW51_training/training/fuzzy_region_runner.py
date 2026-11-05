@@ -13,6 +13,11 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from dl_fusion.metrics import (
+    CLASSIFICATION_METRIC_PROTOCOL,
+    classification_metric_metadata,
+)
+
 from ..data.fem_insar import (
     build_fem_archive_index,
     derive_ad_groups,
@@ -46,17 +51,75 @@ from .fuzzy_state_runner import _state_level_summary
 from .progress import make_progress
 
 
-def _cap_records_per_state(records, cap: int):
+def _training_monitor_policy(selected_task: str, selection_metric: str) -> tuple[str, str]:
+    metric = "nll" if selected_task == "ad_rel_classification" else selection_metric
+    return metric, "min" if metric == "nll" else "max"
+
+
+def _cap_records_per_state(records, cap: int, *, seed: int = 0):
     if int(cap) <= 0:
         return list(records)
-    counts: dict[str, int] = defaultdict(int)
-    selected = []
+    grouped: dict[str, list[Any]] = defaultdict(list)
     for record in records:
-        state = record.structural_state_id
-        if counts[state] < int(cap):
-            selected.append(record)
-            counts[state] += 1
+        grouped[str(record.structural_state_id)].append(record)
+    rng = np.random.default_rng(int(seed))
+    selected = []
+    for state in sorted(grouped):
+        state_records = grouped[state]
+        count = min(int(cap), len(state_records))
+        indices = np.sort(rng.choice(len(state_records), size=count, replace=False))
+        selected.extend(state_records[int(index)] for index in indices)
     return selected
+
+
+def _write_classification_plot(history: list[dict[str, Any]], path: Path) -> bool:
+    if not history:
+        return False
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return False
+
+    epochs = [int(row["epoch"]) for row in history]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    axes[0].plot(epochs, [row["train_group_ce"] for row in history], marker="o", label="train CE")
+    axes[0].plot(
+        epochs,
+        [row["validation_state_nll"] for row in history],
+        marker="o",
+        label="validation state NLL",
+    )
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].set_title("Classification loss")
+    axes[0].legend()
+    axes[0].grid(alpha=0.25)
+
+    axes[1].plot(
+        epochs,
+        [row["validation_state_f1_macro"] for row in history],
+        marker="o",
+        label="validation macro-F1",
+    )
+    auc_values = [
+        np.nan if row["validation_state_roc_auc"] is None else row["validation_state_roc_auc"]
+        for row in history
+    ]
+    axes[1].plot(epochs, auc_values, marker="o", label="validation macro OVR AUC")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Score")
+    axes[1].set_ylim(0.0, 1.0)
+    axes[1].set_title("Validation classification metrics")
+    axes[1].legend()
+    axes[1].grid(alpha=0.25)
+    fig.tight_layout()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+    return True
 
 
 def _run_region_epoch(
@@ -69,6 +132,7 @@ def _run_region_epoch(
     progress: dict[str, Any] | None,
     desc: str | None,
     collect: bool = False,
+    loss_weight: float = 1.0,
 ):
     model.train(train)
     total_loss = 0.0
@@ -89,6 +153,7 @@ def _run_region_epoch(
             with torch.set_grad_enabled(train):
                 outputs = model(batch)
                 loss, components = fuzzy_state_loss(outputs, batch)
+                loss = loss * float(loss_weight)
                 if train:
                     optimizer.zero_grad(set_to_none=True)
                     loss.backward()
@@ -152,12 +217,39 @@ def _evaluate_region(
         group_map.group_value(index) for index in range(group_map.group_count)
     ]
     group_result = group_metrics(logits, group_ids, group_values)
+    state_probability_sums: dict[str, torch.Tensor] = {}
+    state_labels: dict[str, int] = {}
+    state_counts: dict[str, int] = defaultdict(int)
+    probabilities = torch.softmax(logits, dim=-1)
+    for index, item in enumerate(metadata):
+        state_id = str(item["structural_state_id"])
+        group_id = int(group_ids[index])
+        previous = state_labels.setdefault(state_id, group_id)
+        if previous != group_id:
+            raise ValueError(f"structural state {state_id} has inconsistent Ad_rel labels")
+        state_probability_sums[state_id] = (
+            state_probability_sums.get(state_id, torch.zeros_like(probabilities[index]))
+            + probabilities[index]
+        )
+        state_counts[state_id] += 1
+    ordered_state_ids = sorted(
+        state_probability_sums,
+        key=lambda value: (0, int(value)) if value.isdigit() else (1, value),
+    )
+    state_probabilities = torch.stack(
+        [state_probability_sums[state] / state_counts[state] for state in ordered_state_ids]
+    )
+    state_level_group_result = group_metrics(
+        torch.log(state_probabilities.clamp_min(1e-12)),
+        torch.as_tensor([state_labels[state] for state in ordered_state_ids]),
+        group_values,
+    )
     metrics: dict[str, Any] = {
         "group": group_result,
+        "state_level_group": state_level_group_result,
         "loss": float(loss),
         **{f"component_{key}": float(value) for key, value in components.items()},
     }
-    probabilities = torch.softmax(logits, dim=-1)
     predicted = probabilities.argmax(dim=-1)
     values = np.asarray(group_values, dtype=np.float64)
     rows: list[dict[str, Any]] = []
@@ -234,6 +326,28 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
         parameter=data.ad_group_parameter,
         expected_count=data.ad_group_count,
     )
+    selected_task = (
+        config.tasks.selected_task
+        if getattr(config, "tasks", None) is not None
+        else None
+    )
+    if selected_task == "ad_rel_classification":
+        if data.ad_group_parameter != "Ad_rel":
+            raise ValueError("ad_rel_classification requires data.ad_group_parameter=Ad_rel")
+        expected_values = np.asarray(
+            config.tasks.ad_rel_classification.class_values, dtype=np.float64
+        )
+        actual_values = np.asarray(
+            [group_map.group_value(index) for index in range(group_map.group_count)],
+            dtype=np.float64,
+        )
+        if expected_values.shape != actual_values.shape or not np.allclose(
+            expected_values, actual_values, rtol=0.0, atol=1e-9
+        ):
+            raise ValueError(
+                "configured Ad_rel classes do not match the FEM archive groups: "
+                f"configured={expected_values.tolist()}, actual={actual_values.tolist()}"
+            )
     records = split_fem_records(
         index,
         data.split_seed,
@@ -266,13 +380,15 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             f"acquisition count {target_length}"
         )
     train_records = _cap_records_per_state(
-        records["train"], fuzzy.train_trajectories_per_state
+        records["train"], fuzzy.train_trajectories_per_state, seed=data.seed
     )
     validation_records = _cap_records_per_state(
-        records["validation"], fuzzy.eval_trajectories_per_state
+        records["validation"],
+        fuzzy.eval_trajectories_per_state,
+        seed=int(data.split_seed) + 1,
     )
     test_records = _cap_records_per_state(
-        records["test"], fuzzy.eval_trajectories_per_state
+        records["test"], fuzzy.eval_trajectories_per_state, seed=int(data.split_seed) + 2
     )
     train_refs = make_fuzzy_query_refs(train_records, fuzzy.query_realizations)
     validation_refs = make_fuzzy_query_refs(validation_records, 1)
@@ -435,7 +551,8 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if fuzzy.region_model == "region_summary":
         model_params["input_mode"] = "region"
-        model_params["region_pooling"] = fuzzy.region_pooling
+        if config.model.name != "gnn_lstm":
+            model_params["region_pooling"] = fuzzy.region_pooling
         model = FuzzyRegionSummaryModel(
             config.model.name,
             model_params,
@@ -444,6 +561,7 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             head_hidden=head_hidden,
             dropout=head_dropout,
             bag_feature_dropout=fuzzy.bag_feature_dropout,
+            include_response_head=selected_task != "ad_rel_classification",
         ).to(device)
     else:
         model = FuzzyRegionModel(
@@ -457,10 +575,20 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             dropout=head_dropout,
             bag_feature_dropout=fuzzy.bag_feature_dropout,
             target_length=0,
+            include_response_head=selected_task != "ad_rel_classification",
         ).to(device)
     first_batch = next(iter(train_loader)).to(device)
     with torch.no_grad():
         model(first_batch)
+    selection_metric = (
+        config.checkpoint_selection.metric
+        if getattr(config, "checkpoint_selection", None) is not None
+        else "mrr"
+    )
+    selection_mode = "min" if selection_metric == "nll" else "max"
+    monitor_metric, monitor_mode = _training_monitor_policy(
+        selected_task, selection_metric
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.train.learning_rate,
@@ -470,7 +598,7 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
     if config.train.lr_scheduler == "plateau":
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            mode="max",
+            mode=monitor_mode,
             factor=config.train.lr_factor,
             patience=config.train.lr_patience,
             min_lr=config.train.min_learning_rate,
@@ -479,14 +607,22 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
         "mode": config.train.progress,
         "log_every": config.train.log_every_batches,
     }
+    loss_weight = (
+        config.tasks.ad_rel_classification.loss_weight
+        if selected_task == "ad_rel_classification"
+        else 1.0
+    )
     checkpoint_path = (
         output_root / "models" / f"{config.model.name}_region_state_best.pt"
     )
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     history: list[dict[str, Any]] = []
-    best_score = float("-inf")
+    best_score = float("inf") if selection_mode == "min" else float("-inf")
     best_epoch = 0
-    stale = 0
+    best_monitor_score = (
+        float("inf") if monitor_mode == "min" else float("-inf")
+    )
+    monitor_stale = 0
     for epoch in range(1, config.train.epochs + 1):
         train_loss, train_components, _ = _run_region_epoch(
             model,
@@ -496,6 +632,7 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             train=True,
             progress=progress_options,
             desc=f"train epoch={epoch}",
+            loss_weight=loss_weight,
         )
         validation_metrics, validation_per_state, _ = _evaluate_region(
             model,
@@ -505,7 +642,16 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             progress=progress_options,
             desc=f"validation epoch={epoch}",
         )
-        selection = float(validation_metrics["group"]["mrr"])
+        if selection_metric in ("f1_macro", "nll"):
+            selection_source = validation_metrics["state_level_group"]
+            selection = float(selection_source[selection_metric])
+        else:
+            selection = float(validation_metrics["group"]["mrr"])
+        if monitor_metric in ("nll", "f1_macro"):
+            monitor_source = validation_metrics["state_level_group"]
+            monitor_selection = float(monitor_source[monitor_metric])
+        else:
+            monitor_selection = selection
         row = {
             "epoch": epoch,
             "train_loss": train_loss,
@@ -515,6 +661,13 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             "validation_group_top1": validation_metrics["group"]["top1_accuracy"],
             "validation_group_top3": validation_metrics["group"]["top3_accuracy"],
             "validation_group_mrr": validation_metrics["group"]["mrr"],
+            "validation_group_precision_macro": validation_metrics["group"]["precision_macro"],
+            "validation_group_recall_macro": validation_metrics["group"]["recall_macro"],
+            "validation_group_f1_macro": validation_metrics["group"]["f1_macro"],
+            "validation_state_f1_macro": validation_metrics["state_level_group"]["f1_macro"],
+            "validation_state_roc_auc": validation_metrics["state_level_group"]["roc_auc"],
+            "validation_state_nll": validation_metrics["state_level_group"]["nll"],
+            "validation_monitor_score": monitor_selection,
             "validation_group_nll": validation_metrics["group"]["nll"],
             "validation_group_ece": validation_metrics["group"]["ece"],
             "validation_ad_rel_abs_error": validation_metrics["group"].get(
@@ -526,17 +679,30 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
         (output_root / "history.json").write_text(
             json.dumps(history, indent=2), encoding="utf-8"
         )
-        if selection > best_score:
+        improved = (
+            selection < best_score
+            if selection_mode == "min"
+            else selection > best_score
+        )
+        if improved:
             best_score = selection
             best_epoch = epoch
-            stale = 0
             torch.save(
                 {
                     "model_name": config.model.name,
                     "model_params": model_params,
                     "model_state_dict": model.state_dict(),
                     "epoch": epoch,
-                    "task": "kw51_fuzzy_region_state",
+                    "task": (
+                        "kw51_ad_rel_classification"
+                        if selected_task == "ad_rel_classification"
+                        else "kw51_fuzzy_region_state"
+                    ),
+                    "checkpoint_selection": {
+                        "metric": selection_metric,
+                        "mode": selection_mode,
+                        "value": best_score,
+                    },
                     "primary_target": "ad_group",
                     "region_layout": layout.to_dict(),
                     "region_pooling": fuzzy.region_pooling,
@@ -548,13 +714,22 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
                 },
                 checkpoint_path,
             )
+        monitor_improved = (
+            monitor_selection < best_monitor_score
+            if monitor_mode == "min"
+            else monitor_selection > best_monitor_score
+        )
+        if monitor_improved:
+            best_monitor_score = monitor_selection
+            monitor_stale = 0
         else:
-            stale += 1
+            monitor_stale += 1
         if scheduler is not None:
-            scheduler.step(selection)
+            scheduler.step(monitor_selection)
         print(
             f"epoch={epoch} train_group_ce={train_components.get('group_ce'):.4f} "
             f"val_group_top1={validation_metrics['group']['top1_accuracy']:.4f} "
+            f"val_state_f1_macro={validation_metrics['state_level_group']['f1_macro']:.4f} "
             f"val_group_mrr={validation_metrics['group']['mrr']:.4f} "
             f"val_group_nll={validation_metrics['group']['nll']:.4f} "
             f"val_group_ece={validation_metrics['group']['ece']:.4f}",
@@ -562,7 +737,7 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
         )
         if (
             config.train.early_stopping_patience
-            and stale >= config.train.early_stopping_patience
+            and monitor_stale >= config.train.early_stopping_patience
         ):
             break
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -603,9 +778,50 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
     if audit is not None:
         audit_configured = audit["configured_protocol"]["name"]
         audit_summary = audit["protocols"][audit_configured]["summary"]
+    if selected_task == "ad_rel_classification":
+        classification_metadata = classification_metric_metadata(
+            evaluation_unit="structural_state",
+            num_classes=group_map.group_count,
+            aggregation="mean_probability_by_structural_state",
+        )
+        classification_metadata["classification_metric_protocol"] = (
+            CLASSIFICATION_METRIC_PROTOCOL
+        )
+        classification_metric_views = {
+            "group": classification_metric_metadata(
+                evaluation_unit="query_observation",
+                num_classes=group_map.group_count,
+                aggregation="one_prediction_per_query_observation",
+            ),
+            "state_level_group": classification_metadata.copy(),
+        }
+    else:
+        classification_metadata = {
+            "metric_protocol": None,
+            "classification_metric_protocol": None,
+            "evaluation_unit": "query_observation",
+            "num_classes": None,
+            "metric_aggregation": None,
+        }
+        classification_metric_views = {}
     report = {
-        "task": "kw51_fuzzy_region_state",
+        "task": (
+            "kw51_ad_rel_classification"
+            if selected_task == "ad_rel_classification"
+            else "kw51_fuzzy_region_state"
+        ),
         "primary_target": "ad_group",
+        "inference_outputs": (
+            list(config.inference.outputs)
+            if getattr(config, "inference", None) is not None
+            else [
+                "ad_rel_classification"
+                if fuzzy.primary_target in ("state", "ad_group")
+                else "regional_response"
+            ]
+        ),
+        **classification_metadata,
+        "classification_metric_views": classification_metric_views,
         "observation_mode": fuzzy.observation_mode,
         "target_semantics": (
             "candidate FEM Ad_rel parameter-family compatibility; not field "
@@ -673,8 +889,29 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
             "minimum_for_formal": int(fuzzy.formal_min_eval_states),
         },
         "best_epoch": best_epoch,
-        "selection_metric": "validation_group_mrr",
-        "best_validation_group_mrr": best_score,
+        "selection_metric": {
+            "f1_macro": "validation_state_f1_macro",
+            "nll": "validation_state_nll",
+            "mrr": "validation_group_mrr",
+        }[selection_metric],
+        "selection_mode": selection_mode,
+        "training_monitor_metric": (
+            f"validation_state_{monitor_metric}"
+            if selected_task == "ad_rel_classification"
+            else f"validation_group_{monitor_metric}"
+        ),
+        "loss_weight": float(loss_weight),
+        "best_validation_selection_score": best_score,
+        "classification_metric_unit": (
+            "structural_state_id"
+            if selected_task == "ad_rel_classification"
+            else "query_observation"
+        ),
+        "classification_metric_aggregation": (
+            "mean_probability_by_structural_state"
+            if selected_task == "ad_rel_classification"
+            else None
+        ),
         "metrics": {
             "validation": validation_metrics,
             "test": test_metrics,
@@ -686,6 +923,8 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
         "state_level": {
             "validation": _state_level_summary(validation_per_state),
             "test": _state_level_summary(test_per_state),
+            "validation_classification": validation_metrics["state_level_group"],
+            "test_classification": test_metrics["state_level_group"],
         },
         "baselines": {
             "test": {
@@ -708,6 +947,15 @@ def run_fuzzy_region_training(config) -> dict[str, Any]:
         },
         "weights": {"checkpoint": str(checkpoint_path)},
         "history": str(output_root / "history.json"),
+        "plots": {
+            "training_history": (
+                str(output_root / "training_history.png")
+                if _write_classification_plot(
+                    history, output_root / "training_history.png"
+                )
+                else None
+            )
+        },
         "predictions": {
             "validation": str(validation_predictions_path),
             "test": str(test_predictions_path),

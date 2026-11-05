@@ -96,6 +96,38 @@ def test_region_models_keep_response_region_and_time_axes(summary: bool) -> None
     assert output["region_state_logits"].shape == (2, 3, 2)
 
 
+@pytest.mark.parametrize("summary", [False, True])
+def test_region_classifiers_can_skip_unused_response_head(summary: bool) -> None:
+    batch = _batch(point_mode=not summary)
+    if summary:
+        model = FuzzyRegionSummaryModel(
+            "lstm",
+            _model_params("region"),
+            region_count=3,
+            group_count=2,
+            head_hidden=8,
+            dropout=0.0,
+            bag_feature_dropout=0.0,
+            include_response_head=False,
+        )
+    else:
+        model = FuzzyRegionModel(
+            "lstm",
+            _model_params(),
+            region_count=3,
+            group_count=2,
+            head_hidden=8,
+            dropout=0.0,
+            bag_feature_dropout=0.0,
+            include_response_head=False,
+        )
+
+    output = model(batch)
+
+    assert set(output) == {"state_logits", "group_logits"}
+    assert output["group_logits"].shape == (2, 2)
+
+
 def test_region_mean_mlp_baseline_keeps_region_time_axes() -> None:
     model = FuzzyRegionMLPModel(region_count=3, group_count=2, hidden_dim=8, dropout=0.0)
     output = model(_batch(point_mode=False))

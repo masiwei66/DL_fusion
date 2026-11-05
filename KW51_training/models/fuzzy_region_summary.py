@@ -27,6 +27,7 @@ class FuzzyRegionSummaryModel(nn.Module):
         head_hidden: int = 128,
         dropout: float = 0.1,
         bag_feature_dropout: float = 0.1,
+        include_response_head: bool = True,
     ):
         super().__init__()
         self.model_name = model_name
@@ -46,12 +47,16 @@ class FuzzyRegionSummaryModel(nn.Module):
             nn.Dropout(float(dropout)),
         )
         self.group_head = nn.Linear(head_hidden, self.group_count)
-        self.response_head = RegionTemporalResponseHead(
-            self.region_count,
-            self.group_count,
-            coordinate_dim=2,
-            time_dim=2,
-            hidden_dim=head_hidden,
+        self.response_head = (
+            RegionTemporalResponseHead(
+                self.region_count,
+                self.group_count,
+                coordinate_dim=2,
+                time_dim=2,
+                hidden_dim=head_hidden,
+            )
+            if include_response_head
+            else None
         )
 
     def forward(self, batch: WindowBatch) -> dict[str, torch.Tensor]:
@@ -69,6 +74,8 @@ class FuzzyRegionSummaryModel(nn.Module):
             representation = torch.cat([representation, bag_features], dim=-1)
         hidden = self.trunk(representation)
         state_logits = self.group_head(hidden)
+        if self.response_head is None:
+            return {"state_logits": state_logits, "group_logits": state_logits}
         if batch.region_present is None or batch.region_coverage is None:
             raise ValueError("FuzzyRegionSummaryModel requires region batch fields")
         values = batch.values.permute(0, 2, 1)
